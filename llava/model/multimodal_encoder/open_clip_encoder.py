@@ -103,12 +103,33 @@ class OpenCLIPVisionTower(nn.Module):
             return forward_openclip(self.vision_tower, x)
 
     def forward(self, images):
+        # Check for black image marker (value -999.0) - skip processing and use cached feature
+        if not isinstance(images, list) and images.min().item() < -100.0:
+            # This is a marker for text-only sample - return cached black feature
+            if not hasattr(self, '_black_cached_feature'):
+                # Cache doesn't exist yet, compute it once
+                black_image_pil = torch.zeros_like(images).fill_(0.0)  # Will be processed as black image
+                # Actually, just process a black image normally
+                black_image_pil = images.clone().fill_(0.0)  # Use zeros, not marker
+                image_forward_outs = self.forward_visual(black_image_pil.to(self.dtype), output_hidden_states=True)
+                self._black_cached_feature = self.feature_select(image_forward_outs).to(images.dtype)
+            return self._black_cached_feature
+        
         if type(images) is list:
             image_features = []
             for image in images:
-                image_forward_out = self.forward_visual(image.to(self.dtype).unsqueeze(0), output_hidden_states=True)
-                image_feature = self.feature_select(image_forward_out).to(image.dtype)
-                image_features.append(image_feature)
+                # Check for marker in each image
+                if image.min().item() < -100.0:
+                    # Use cached feature
+                    if not hasattr(self, '_black_cached_feature'):
+                        black_image = image.clone().fill_(0.0)
+                        image_forward_out = self.forward_visual(black_image.to(self.dtype).unsqueeze(0), output_hidden_states=True)
+                        self._black_cached_feature = self.feature_select(image_forward_out).to(image.dtype)
+                    image_features.append(self._black_cached_feature)
+                else:
+                    image_forward_out = self.forward_visual(image.to(self.dtype).unsqueeze(0), output_hidden_states=True)
+                    image_feature = self.feature_select(image_forward_out).to(image.dtype)
+                    image_features.append(image_feature)
         else:
             image_forward_outs = self.forward_visual(images.to(self.dtype), output_hidden_states=True)
             image_features = self.feature_select(image_forward_outs).to(images.dtype)

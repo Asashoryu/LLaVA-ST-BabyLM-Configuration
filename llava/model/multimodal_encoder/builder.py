@@ -5,6 +5,7 @@ from .open_clip_encoder import OpenCLIPVisionTower
 from .hf_vision import HFVisionTower
 from .siglip_encoder import SigLipVisionTower
 from .clip_encoder import CLIPVisionTower, CLIPVisionTowerS2
+from .dinov2_encoder import DinoV2VisionTower  # Il nome del file è dinov2_encoder.py
 
 # from .eva_clip.eva_clip_encoder import EvaClipVisionTower
 # from .dev_eva_clip.eva_vit import EvaViTWrapper
@@ -31,5 +32,7 @@ def build_vision_tower(vision_tower_cfg, **kwargs):
     #     return EvaClipVisionTower(vision_tower, args=vision_tower_cfg, **kwargs)
     # elif vision_tower in ["EVA-CLIP-8B", "EVA-CLIP-8B-plus"]:
     #     return EvaViTWrapper(vision_tower, args=vision_tower_cfg, **kwargs)
+    elif "dinov2" in vision_tower:
+        return DinoV2VisionTower(vision_tower, vision_tower_cfg=vision_tower_cfg, **kwargs)
 
     raise ValueError(f"Unknown vision tower: {vision_tower}")

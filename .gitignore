@@ -1,3 +1,4 @@
+
 # Python
 __pycache__
 *.pyc
@@ -81,6 +82,62 @@ demo_outputs_new/
 demo_outputs_hf/
 
 *.hope
-data/
+# data/
 eval_output/
 *.hope
+
+# MY FILES AND FOLDERS TO IGNORE
+
+comparisons_3_models/
+baby_llama3_baseline/
+baby_llama_baseline/
+data/
+logs/
+temp/
+tests/
+results/
+
+
+analyze_dataset_tokens.py
+analyze_npy.py
+compare_jsons_positions.py
+count_shard_words.py
+compare_single_embedding.py
+compare_and_plot.py
+create_baby_llama.py
+create_baby_llama_3.py
+
+
+de_emojing.py
+debug_embedding_creation.py
+debug_tokenization.py
+deimage_shard.py
+diagnoze_npy_structure.py
+diagnose_token_architecture.py
+download_all_images.py
+generate_ln_for_llava.py
+inference_debug.py
+inference_linguistic_1.py
+inference_linguistic_2.py
+inference_linguistic_3.py
+inference_linguistic_4.py
+inference.py
+inspect_dinov2_output.py
+inspect_json_images.py
+interleave_train_texts.py
+preprocess_localized_narratives_json.py
+print_tree.py
+split_tim_dataset.py
+test_allignment_hypothesis.py
+test.py
+validate_fixes_in_logs.py
+run_debug.sh
+eval_blimp_fixed.sh
+eval_tim_fix.sh
+inference_linguistic_4_results_tim_1.jsonl
+inference_linguistic_4_results.jsonl
+eval_blimp.sh
+eval_babylm_challenge.sh
+inference.sh
+eval_commands. txt
+guide.txt

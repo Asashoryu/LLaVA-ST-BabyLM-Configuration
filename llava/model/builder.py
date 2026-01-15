@@ -86,7 +86,7 @@ def load_pretrained_model(model_path, model_base, model_name, load_8bit=False, l
                     llava_cfg = AutoConfig.from_pretrained(model_base)
                     kwargs["config"] = llava_cfg
                     model = LlavaQwenForCausalLM.from_pretrained(model_base, low_cpu_mem_usage=True, attn_implementation=attn_implementation, **kwargs)
-                    
+
             else:
                 from llava.model.language_model.llava_llama import LlavaConfig
 
@@ -243,7 +243,7 @@ def load_pretrained_model(model_path, model_base, model_name, load_8bit=False, l
                         model = LlavaQwenMoeForCausalLM.from_pretrained(model_path, low_cpu_mem_usage=True, attn_implementation=attn_implementation, config=llava_cfg, **kwargs)
                     else:
                         model = LlavaQwenMoeForCausalLM.from_pretrained(model_path, low_cpu_mem_usage=True, attn_implementation=attn_implementation, **kwargs)
-                
+
                 else:
                     from llava.model.language_model.llava_qwen import LlavaQwenConfig
                     if overwrite_config is not None:
@@ -256,7 +256,7 @@ def load_pretrained_model(model_path, model_base, model_name, load_8bit=False, l
                         llava_cfg = AutoConfig.from_pretrained(model_path)
                         kwargs["config"] = llava_cfg
                         model = LlavaQwenForCausalLM.from_pretrained(model_path, low_cpu_mem_usage=True, attn_implementation=attn_implementation, **kwargs)
-                    
+
             elif "gemma" in model_name.lower():
                 tokenizer = AutoTokenizer.from_pretrained(model_path, use_fast=False)
                 cfg_pretrained = AutoConfig.from_pretrained(model_path)
@@ -333,7 +333,65 @@ def load_pretrained_model(model_path, model_base, model_name, load_8bit=False, l
         context_len = 2048
 
     if "llava_st" in model_name.lower():
+        # Initialize vision config (get token IDs from tokenizer)
         model.model.init_vision_config(tokenizer)
+
+        # For evaluation, we need to initialize spatial/temporal tokens if they don't exist in the vocab
+        # This is crucial for TIM models which were trained with these tokens
+        vision_config = model.get_model().vision_config
+        if vision_config is not None:
+            # Check if tokens are already in vocabulary
+            from llava.constants import (
+                SPATIAL_HEIGHT_INPUT_TOKEN, SPATIAL_HEIGHT_OUTPUT_TOKEN,
+                SPATIAL_WIDTH_INPUT_TOKEN, SPATIAL_WIDTH_OUTPUT_TOKEN,
+                TEMPORAL_INPUT_TOKEN, TEMPORAL_OUTPUT_TOKEN
+            )
+
+            tokens_to_check = [
+                SPATIAL_HEIGHT_INPUT_TOKEN, SPATIAL_HEIGHT_OUTPUT_TOKEN,
+                SPATIAL_WIDTH_INPUT_TOKEN, SPATIAL_WIDTH_OUTPUT_TOKEN,
+                TEMPORAL_INPUT_TOKEN, TEMPORAL_OUTPUT_TOKEN
+            ]
+
+            # If any token is missing, we need to initialize them
+            tokens_missing = any(token not in tokenizer.get_vocab() for token in tokens_to_check)
+
+            if tokens_missing:
+                # CRITICAL FIX: The checkpoint already contains trained spatial embedding weights!
+                # We must NOT reinitialize them (which creates random weights).
+                # Instead, we should reload the tokenizer from the checkpoint to get the spatial tokens.
+                rank0_print("⚠️  Tokenizer is missing spatial tokens, but checkpoint has trained weights!")
+                rank0_print("⚠️  Loading tokenizer from checkpoint to preserve trained spatial embeddings...")
+
+                try:
+                    # Reload tokenizer from the checkpoint directory
+                    # This gets us the tokenizer that was used during training (with spatial tokens)
+                    tokenizer = AutoTokenizer.from_pretrained(
+                        model_path,
+                        model_max_length=tokenizer_model_max_length,
+                        padding_side=padding_side,
+                        use_fast=False,
+                    )
+                    rank0_print(f"✅ Loaded tokenizer from checkpoint (vocab_size={len(tokenizer)})")
+
+                    # Just set the flag to enable spatial embeddings during forward pass
+                    # The weights are already loaded from the checkpoint
+                    model.model.init_special_embeddings()
+                    rank0_print(f"✅ Initialized special embeddings flag (using trained weights from checkpoint)")
+                except Exception as e:
+                    rank0_print(f"⚠️  Could not load tokenizer from checkpoint: {e}")
+                    rank0_print(f"⚠️  Falling back to reinitializing (will use random weights!)")
+
+                    # Fallback: reinitialize with random weights
+                    num_spatial_tokens = getattr(vision_config, 'spatial_token_num', 100)
+                    num_temporal_tokens = getattr(vision_config, 'fast_frame_num', 1)
+                    num_new_tokens = model.initialize_spatial_temporal_tokens(
+                        tokenizer=tokenizer,
+                        num_spatial_tokens=num_spatial_tokens,
+                        num_temporal_tokens=num_temporal_tokens
+                    )
+                    model.model.init_special_embeddings()
+                    model.resize_token_embeddings(len(tokenizer))
 
     return tokenizer, model, image_processor, context_len
 
@@ -371,13 +429,13 @@ def load_lora_model(lora_path, model_base, base_model_name, is_ckpt=False, load_
         # info = model.load_state_dict(non_lora_trainables, strict=False)
 
         from peft import PeftModel
-        
+
         if "base_model.model.model.embed_tokens.weight" in non_lora_trainables:
             if model.model.embed_tokens.weight.shape[0] != non_lora_trainables["base_model.model.model.embed_tokens.weight"].shape[0]:
                 new_token_num = non_lora_trainables["base_model.model.model.embed_tokens.weight"].shape[0] - model.model.embed_tokens.weight.shape[0]
                 cur_token_num = non_lora_trainables["base_model.model.model.embed_tokens.weight"].shape[0]
                 model.initialize_embedings(new_token_num, cur_token_num)
-                
+
         rank0_print("Loading LoRA weights...")
         model = PeftModel.from_pretrained(model, lora)
         info = model.load_state_dict(non_lora_trainables, strict=False)

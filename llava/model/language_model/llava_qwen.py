@@ -123,10 +123,10 @@ class LlavaQwenForCausalLM(Qwen2ForCausalLM, LlavaMetaForCausalLM):
             )
 
             hidden_states = outputs[0]
-            
+
             loss = None
             vision_config = self.get_model().vision_config
-            if labels is not None and all(variables) and self.model.has_init_specific_embeddings:
+            if labels is not None and any(any(v.values()) for v in variables) and self.model.has_init_specific_embeddings:
                 logits = None
                 temporal_output_embeddings = reparam(self.model.temporal_output_embeddings.weight, self.model.temporal_reparam_mat)
                 spatial_height_output_embeddings = reparam(self.model.spatial_height_output_embeddings.weight, self.model.spatial_height_reparam_mat)
@@ -139,7 +139,7 @@ class LlavaQwenForCausalLM(Qwen2ForCausalLM, LlavaMetaForCausalLM):
 
                     cur_logits = F.linear(hidden_states[cur_video_idx:cur_video_idx+1], torch.cat(
                         [
-                            self.lm_head.weight, 
+                            self.lm_head.weight,
                             temporal_output_embeddings.to(self.lm_head.weight.device),
                             spatial_height_output_embeddings.to(self.lm_head.weight.device),
                             spatial_width_output_embeddings.to(self.lm_head.weight.device),
@@ -169,7 +169,7 @@ class LlavaQwenForCausalLM(Qwen2ForCausalLM, LlavaMetaForCausalLM):
                             cur_onehot_labels[[spatial_height_output_token_indices[i]]][self.vocab_size + self.num_temporal_tokens + floor_position] = 1 - ratio
                             if floor_position != ceil_position:
                                 cur_onehot_labels[[spatial_height_output_token_indices[i]]][self.vocab_size + self.num_temporal_tokens + ceil_position] = ratio
-                            
+
                         for i in range(spatial_width_output_token_indices.shape[0]):
                             floor_position, ceil_position, ratio = position_transfer(cur_spatial_width_output_locations[i], self.num_spatial_tokens)
                             cur_onehot_labels[[spatial_width_output_token_indices[i]]][vision_config.spatial_width_output_token_id] = 0
@@ -188,15 +188,15 @@ class LlavaQwenForCausalLM(Qwen2ForCausalLM, LlavaMetaForCausalLM):
                         shift_labels = cur_labels[..., 1:].contiguous()
                         shift_labels = shift_labels.view(-1)
                         shift_labels = shift_labels.to(shift_logits.device)
-                        
+
                         loss = F.cross_entropy(shift_logits, shift_labels) if loss is None else loss + F.cross_entropy(shift_logits, shift_labels)
                     logits = cur_logits if logits is None else torch.cat([logits, cur_logits], 0)
 
             else:
                 if self.model.has_init_specific_embeddings:
                     logits = F.linear(hidden_states, torch.cat([
-                        self.lm_head.weight, 
-                        self.model.temporal_output_embeddings.weight.to(self.lm_head.weight.device), 
+                        self.lm_head.weight,
+                        self.model.temporal_output_embeddings.weight.to(self.lm_head.weight.device),
                         self.model.spatial_height_output_embeddings.weight.to(self.lm_head.weight.device),
                         self.model.spatial_width_output_embeddings.weight.to(self.lm_head.weight.device),
                         ], 0

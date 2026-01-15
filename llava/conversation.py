@@ -146,7 +146,7 @@ class Conversation:
 
             for i, (role, message) in enumerate(messages):
                 if i == 0:
-                    assert message, "first message should not be none"
+                    assert message is not None, "first message should not be none"
                     assert role == self.roles[0], "first message should come from user"
                 if message:
                     if type(message) is tuple:
@@ -262,7 +262,7 @@ class Conversation:
                     else:
                         msg = re.sub(r"(<image>)\n(?=<image>)", r"\1 ", msg)
 
-                    img_str_list = []                         
+                    img_str_list = []
                     for img in image:
                         if self.is_image_file(img):
                             img_b64_str = self.process_image(img, "Default", return_pil=False, image_format="JPEG")
@@ -558,6 +558,7 @@ conv_templates = {
     "v1": conv_vicuna_v1,
     "vicuna_v1": conv_vicuna_v1,
     "llama_2": conv_llama_2,
+    "llama_v2": conv_llama_2,
     "mistral_instruct": conv_mistral_instruct,
     "mistral_orca": conv_mistral_orca,
     "mistral_zephyr": conv_mistral_zephyr,

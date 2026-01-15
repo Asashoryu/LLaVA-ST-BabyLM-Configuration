@@ -16,6 +16,33 @@ handler = None
 
 import torch.distributed as dist
 import multiprocessing
+
+# Helpers to safely handle both distributed and single-process runs
+def is_dist_avail_and_initialized():
+    try:
+        return dist.is_available() and dist.is_initialized()
+    except Exception:
+        return False
+
+def get_rank():
+    """Return the current process rank or 0 if distributed is not initialized."""
+    if is_dist_avail_and_initialized():
+        try:
+            return dist.get_rank()
+        except Exception:
+            return 0
+    return 0
+
+def get_world_size():
+    """Return the world size or 1 when not running distributed."""
+    if is_dist_avail_and_initialized():
+        try:
+            return dist.get_world_size()
+        except Exception:
+            return 1
+    return 1
+
+import multiprocessing
 try:
     import av
     from decord import VideoReader, cpu
@@ -28,23 +55,23 @@ from functools import partial
 
 def run_with_timeout(func, timeout, *args, **kwargs):
     result_queue = multiprocessing.Queue()
-    
+
     def wrapper():
         try:
             result = func(*args, **kwargs)
             result_queue.put(result)
         except Exception as e:
             result_queue.put(e)
-    
+
     process = multiprocessing.Process(target=wrapper)
     process.start()
     process.join(timeout)
-    
+
     if process.is_alive():
         print("函数运行超时")
         process.terminate()
         process.join()
-        return None  
+        return None
     else:
         return result_queue.get()
 
@@ -55,7 +82,7 @@ def process_video_with_decord(video_file, data_args, split=None):
     vr = VideoReader(video_file, ctx=cpu(0), num_threads=1)
     if split is None:
         split = [0,len(vr)-1]
-        
+
     duration = split[1]-split[0]+1
     video_time = duration / vr.get_avg_fps()
     avg_fps = round(vr.get_avg_fps() / data_args.video_fps)
@@ -64,13 +91,13 @@ def process_video_with_decord(video_file, data_args, split=None):
     # frame_idx = np.linspace(0, duration - 1, num_frames).astype(int).tolist()
     frame_idx =  [split[0]+round((i / (num_frames - 1)) * (duration - 1)) for i in range(num_frames)]
     frame_time = [i/avg_fps for i in frame_idx]
-    
+
     if data_args.frames_upbound > 0:
         if len(frame_idx) > data_args.frames_upbound or data_args.force_sample:
             uniform_sampled_frames = np.linspace(0, duration - 1, data_args.frames_upbound, dtype=int)
             frame_idx = uniform_sampled_frames.tolist()
             frame_time = [i/vr.get_avg_fps() for i in frame_idx]
-    
+
     video = vr.get_batch(frame_idx).asnumpy()
     frame_time = ",".join([f"{i:.2f}s" for i in frame_time])
 

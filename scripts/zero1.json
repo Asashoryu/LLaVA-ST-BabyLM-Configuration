@@ -7,7 +7,7 @@
         }
     },
     "zero_optimization": {
-        "stage": 1,
+        "stage": 1
     }
 }
 

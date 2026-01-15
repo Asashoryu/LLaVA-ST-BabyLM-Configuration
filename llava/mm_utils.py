@@ -339,6 +339,8 @@ def process_images(images, image_processor, model_cfg):
 
 
 def tokenizer_image_token(prompt, tokenizer, image_token_index=IMAGE_TOKEN_INDEX, return_tensors=None):
+    # Robust tokenizer that handles inputs with and without <image> tokens
+    # When <image> token is found, it will be replaced with image_token_index as a separator
     prompt_chunks = [tokenizer(chunk).input_ids for chunk in prompt.split("<image>")]
 
     def insert_separator(X, sep):

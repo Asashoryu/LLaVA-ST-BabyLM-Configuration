@@ -107,25 +107,36 @@ class LlavaMetaModel:
             self.init_special_embeddings()
 
     def init_special_embeddings(self):
-        if self.has_init_specific_embeddings:
-            return
         self.has_init_specific_embeddings = True
-        # init spatial token embedding
-        self.spatial_height_input_embeddings = torch.nn.Embedding(self.vision_config.spatial_token_num, self.config.hidden_size)
-        self.spatial_height_output_embeddings = torch.nn.Linear(self.config.hidden_size, self.vision_config.spatial_token_num, bias=False)
 
-        self.spatial_width_input_embeddings = torch.nn.Embedding(self.vision_config.spatial_token_num, self.config.hidden_size)
-        self.spatial_width_output_embeddings = torch.nn.Linear(self.config.hidden_size, self.vision_config.spatial_token_num, bias=False)
-        
-        # init temporal token embedding
-        self.temporal_input_embeddings = torch.nn.Embedding(self.vision_config.fast_frame_num, self.config.hidden_size)
-        self.temporal_output_embeddings = torch.nn.Linear(self.config.hidden_size, self.vision_config.fast_frame_num, bias=False)
+        # init spatial token embedding (only if not already present)
+        if not hasattr(self, 'spatial_height_input_embeddings'):
+            self.spatial_height_input_embeddings = torch.nn.Embedding(self.vision_config.spatial_token_num, self.config.hidden_size)
+        if not hasattr(self, 'spatial_height_output_embeddings'):
+            self.spatial_height_output_embeddings = torch.nn.Linear(self.config.hidden_size, self.vision_config.spatial_token_num, bias=False)
 
-        index_vec = torch.arange(self.vision_config.spatial_token_num)
-        self.spatial_width_reparam_mat = 2.**(-(index_vec[:, None] - index_vec[None]).abs())
-        self.spatial_height_reparam_mat = 2.**(-(index_vec[:, None] - index_vec[None]).abs())
-        index_vec = torch.arange(self.vision_config.fast_frame_num)
-        self.temporal_reparam_mat = 2.**(-(index_vec[:, None] - index_vec[None]).abs())
+        if not hasattr(self, 'spatial_width_input_embeddings'):
+            self.spatial_width_input_embeddings = torch.nn.Embedding(self.vision_config.spatial_token_num, self.config.hidden_size)
+        if not hasattr(self, 'spatial_width_output_embeddings'):
+            self.spatial_width_output_embeddings = torch.nn.Linear(self.config.hidden_size, self.vision_config.spatial_token_num, bias=False)
+
+        # init temporal token embedding (only if not already present)
+        if not hasattr(self, 'temporal_input_embeddings'):
+            self.temporal_input_embeddings = torch.nn.Embedding(self.vision_config.fast_frame_num, self.config.hidden_size)
+        if not hasattr(self, 'temporal_output_embeddings'):
+            self.temporal_output_embeddings = torch.nn.Linear(self.config.hidden_size, self.vision_config.fast_frame_num, bias=False)
+
+        # Register reparam_mat as buffers (only if not already present)
+        if not hasattr(self, 'spatial_width_reparam_mat'):
+            index_vec = torch.arange(self.vision_config.spatial_token_num)
+            self.register_buffer("spatial_width_reparam_mat", 2.**(-(index_vec[:, None] - index_vec[None]).abs()))
+        if not hasattr(self, 'spatial_height_reparam_mat'):
+            index_vec = torch.arange(self.vision_config.spatial_token_num)
+            self.register_buffer("spatial_height_reparam_mat", 2.**(-(index_vec[:, None] - index_vec[None]).abs()))
+        if not hasattr(self, 'temporal_reparam_mat'):
+            index_vec = torch.arange(self.vision_config.fast_frame_num)
+            self.register_buffer("temporal_reparam_mat", 2.**(-(index_vec[:, None] - index_vec[None]).abs()))
+
         self.config.num_temporal_tokens = self.vision_config.spatial_token_num
         self.config.num_spatial_tokens = self.vision_config.fast_frame_num
 
@@ -240,7 +251,7 @@ class LlavaMetaModel:
             rank0_print(f"Loaded mm projector weights from {pretrain_mm_mlp_adapter}. Incompatible keys: {incompatible_keys}")
             incompatible_keys = self.vision_resampler.load_state_dict(get_w(mm_projector_weights, "vision_resampler"), strict=False)
             rank0_print(f"Loaded vision resampler weights from {pretrain_mm_mlp_adapter}. Incompatible keys: {incompatible_keys}")
-        
+
         self.vision_config = VisionConfig()
         if model_args.mm_resampler_type == "fast_slow_resampler":
             self.vision_config.slow_token = True
@@ -311,16 +322,16 @@ class LlavaMetaForCausalLM(ABC):
         image_feature = image_feature.permute(0, 2, 3, 1)
         image_feature = image_feature.view(num_frames, -1, num_dim)
         return image_feature
-    
+
     def is_siglip(self):
         if 'siglip' in self.get_model().config.mm_vision_tower.lower():
             return True
         return False
 
-    def encode_images(self, images, split_sizes=None, modalities=None, 
+    def encode_images(self, images, split_sizes=None, modalities=None,
         temporal_information_injection=None, spatial_height_information_injection=None, spatial_width_information_injection=None):
 
-        if self.model.has_init_specific_embeddings:
+        if self.model.has_init_specific_embeddings and spatial_height_information_injection is not None:
             spatial_height_information_injection = spatial_height_information_injection.permute(1, 2, 0)
             spatial_width_information_injection = spatial_width_information_injection.permute(1, 2, 0)
 
@@ -328,12 +339,37 @@ class LlavaMetaForCausalLM(ABC):
 
         slow_image_features = []
         fast_image_features = []
-        
-        for modality, image in zip(modalities, images):
-            image_feature, image_forward_outs = self.get_model().get_vision_tower()(image)
-            image_feature = self.get_model().mm_projector(image_feature)
 
-            if self.model.has_init_specific_embeddings:
+        # Initialize counter if it doesn't exist
+        if not hasattr(self, '_black_cache_hit_count'):
+            self._black_cache_hit_count = 0
+            self._total_encode_count = 0
+
+        for modality, image in zip(modalities, images):
+            self._total_encode_count += 1
+
+            # OPTIMIZATION: Check if this is a black image (text-only sample) and use cached features
+            is_black_image = False
+            if hasattr(self.get_model(), 'black_projected_feature') and self.get_model().black_projected_feature is not None:
+                # Check if image is all zeros (black)
+                if torch.allclose(image, torch.zeros_like(image), atol=1e-6):
+                    is_black_image = True
+                    self._black_cache_hit_count += 1
+                    # Use cached projected features directly (skip vision tower + projector)
+                    image_feature = self.get_model().black_projected_feature.to(image.device)
+                    # Expand to match batch size if needed
+                    if image.shape[0] > 1:
+                        image_feature = image_feature.expand(image.shape[0], -1, -1)
+
+                    # Log every 100 cache hits
+                    if self._black_cache_hit_count % 100 == 0:
+                        print(f"[Black Image Cache] Hits: {self._black_cache_hit_count}/{self._total_encode_count} ({100*self._black_cache_hit_count/self._total_encode_count:.1f}%)")
+
+            if not is_black_image:
+                image_feature, image_forward_outs = self.get_model().get_vision_tower()(image)
+                image_feature = self.get_model().mm_projector(image_feature)
+
+            if self.model.has_init_specific_embeddings and spatial_height_information_injection is not None:
                 t, hw, _ = image_feature.shape
                 h = w = int(hw**0.5)
                 image_feature = image_feature.reshape(t, h, w, -1)
@@ -343,10 +379,10 @@ class LlavaMetaForCausalLM(ABC):
                     resize_temporal_information_injection = temporal_information_injection.unsqueeze(1)
                 if modality == "image":
                     resize_temporal_information_injection = temporal_information_injection[0:1].unsqueeze(1) + temporal_information_injection.sum() * 0.
-                
+
                 # LAPE
                 image_feature = image_feature + resize_spatial_height_information_injection + resize_spatial_width_information_injection + resize_temporal_information_injection
-                
+
                 image_feature = image_feature.reshape(t, hw, -1)
             if modality == 'video':
                 if 'fast_slow_resampler' in self.get_model().config.mm_resampler_type:
@@ -379,20 +415,24 @@ class LlavaMetaForCausalLM(ABC):
         return slow_image_features, fast_image_features
 
     def prepare_inputs_labels_for_multimodal_video(
-        self, 
-        input_ids, 
-        position_ids, 
-        attention_mask, 
-        past_key_values, 
-        labels, 
-        images, 
-        modalities=["image"], 
+        self,
+        input_ids,
+        position_ids,
+        attention_mask,
+        past_key_values,
+        labels,
+        images,
+        modalities=["image"],
         image_sizes=None,
         variables=None,
     ):
         # orig_embeds_params = getattr(self.get_model(), 'orig_embeds_params', None)
         orig_embeds_params = None
-        if self.model.has_init_specific_embeddings:
+
+        # DEBUG: Disable spatial embeddings during evaluation to test if they are causing the problem
+        use_spatial_embeddings = self.model.has_init_specific_embeddings and self.training
+
+        if use_spatial_embeddings:
             temporal_input_embeddings = reparam(self.model.temporal_input_embeddings.weight, self.model.temporal_reparam_mat)
             temporal_output_embeddings = reparam(self.model.temporal_output_embeddings.weight, self.model.temporal_reparam_mat)
             spatial_height_input_embeddings = reparam(self.model.spatial_height_input_embeddings.weight, self.model.spatial_height_reparam_mat)
@@ -412,10 +452,14 @@ class LlavaMetaForCausalLM(ABC):
             temporal_information_injection = None
             spatial_height_information_injection = None
             spatial_width_information_injection = None
-            
+
             device = self.get_model().embed_tokens.weight.device
             inputs_embeds = F.embedding(input_ids, self.get_model().embed_tokens.weight)
-        
+
+        # Handle text-only samples (no images)
+        if images is None or (isinstance(images, (list, tuple)) and len(images) == 0):
+            return input_ids, position_ids, attention_mask, past_key_values, inputs_embeds, labels
+
         if (input_ids.shape[1] != 1 or self.training):
 
             images_list = []
@@ -430,7 +474,31 @@ class LlavaMetaForCausalLM(ABC):
             encoded_image_features, encoded_fast_image_features = self.encode_images(concat_images, split_sizes, modalities, temporal_information_injection, spatial_height_information_injection, spatial_width_information_injection)
 
             new_input_embeds = []
-            for cur_video_idx,(cur_input_ids, cur_input_embeds, modality) in enumerate(zip(input_ids, inputs_embeds, modalities)):
+            image_idx = 0  # Track which image we're processing
+
+            # Iterate over ALL samples in batch, not just those with images
+            for batch_idx in range(input_ids.shape[0]):
+                cur_input_ids = input_ids[batch_idx]
+                cur_input_embeds = inputs_embeds[batch_idx]
+
+                # Check if this sample has an image by looking at special tokens
+                has_image_tokens = (
+                    (cur_input_ids == self.vision_config.im_start_token).any() or
+                    (cur_input_ids == self.vision_config.vid_start_token).any()
+                )
+
+                if not has_image_tokens:
+                    # Text-only sample - keep original embeddings
+                    new_input_embeds.append(cur_input_embeds)
+                    continue
+
+                # This sample has images/videos - process it
+                modality = modalities[image_idx]
+                cur_video_idx = image_idx
+                image_idx += 1
+
+                # Default to the original embeddings; updated only if we actually splice vision tokens.
+                cur_new_input_embeds = cur_input_embeds
                 if modality == 'image':
                     image_start_tokens = torch.where(cur_input_ids == self.vision_config.im_start_token)[0]
 
@@ -438,12 +506,13 @@ class LlavaMetaForCausalLM(ABC):
                         cur_image_features = encoded_image_features[cur_video_idx].to(device=cur_input_embeds.device)
                         cur_image_features = cur_image_features.flatten(0, 1)
                         num_patches = cur_image_features.shape[0]
+
                         if cur_input_ids[image_start_token_pos + num_patches - 1] != self.vision_config.im_end_token:
                             raise ValueError("The image end token should follow the image start token.")
                         if orig_embeds_params is not None:
                             cur_new_input_embeds = torch.cat((
                                 cur_input_embeds[:image_start_token_pos],
-                                cur_image_features, 
+                                cur_image_features,
                                 cur_input_embeds[image_start_token_pos + num_patches:],
                             ), dim=0)
                         else:
@@ -455,7 +524,7 @@ class LlavaMetaForCausalLM(ABC):
 
                 elif modality == 'video':
                     video_start_tokens = torch.where(cur_input_ids == self.vision_config.vid_start_token)[0]
-                    
+
                     for video_start_token_pos in video_start_tokens:
                         cur_video_features = encoded_fast_image_features[cur_video_idx].to(device=cur_input_embeds.device)
 
@@ -466,7 +535,7 @@ class LlavaMetaForCausalLM(ABC):
                         if orig_embeds_params is not None:
                             cur_new_input_embeds = torch.cat((
                                 cur_input_embeds[:video_start_token_pos],
-                                cur_video_features, 
+                                cur_video_features,
                                 cur_input_embeds[video_start_token_pos + num_patches:],
                             ), dim=0)
                         else:
@@ -476,10 +545,10 @@ class LlavaMetaForCausalLM(ABC):
                                 cur_input_embeds[video_start_token_pos + num_patches:]
                             ), dim=0)
                         # cur_video_idx += 1
-                    
+
                     if self.vision_config.slow_token:
                         slow_video_start_tokens = torch.where(cur_input_ids == self.vision_config.slow_vid_start_token)[0]
-                        
+
                         for video_start_token_pos in slow_video_start_tokens:
                             cur_video_features = encoded_image_features[cur_video_idx].to(device=cur_input_embeds.device)
 
@@ -490,7 +559,7 @@ class LlavaMetaForCausalLM(ABC):
                             if orig_embeds_params is not None:
                                 cur_new_input_embeds = torch.cat((
                                     cur_input_embeds[:video_start_token_pos],
-                                    cur_video_features, 
+                                    cur_video_features,
                                     cur_input_embeds[video_start_token_pos + num_patches:],
                                 ), dim=0)
                             else:
@@ -499,14 +568,14 @@ class LlavaMetaForCausalLM(ABC):
                                     cur_video_features,
                                     cur_input_embeds[video_start_token_pos + num_patches:]
                                 ), dim=0)
-                    
+
                 else:
                     raise ValueError("Unexpected modality besides image and video.")
                 new_input_embeds.append(cur_new_input_embeds)
 
             inputs_embeds = torch.stack(new_input_embeds, dim=0)
 
-        if (input_ids.shape[1] != 1 or self.training) and all(variables):
+        if (input_ids.shape[1] != 1 or self.training) and variables and any(any(v.values()) for v in variables):
             new_input_embeds = []
 
             for cur_video_idx, (cur_input_ids, cur_input_embeds, cur_variables) in enumerate(zip(input_ids, inputs_embeds, variables)):
@@ -537,7 +606,7 @@ class LlavaMetaForCausalLM(ABC):
                         or (cur_input_ids == self.vision_config.spatial_width_input_token_id).sum() > len(cur_spatial_width_input_locations) \
                         or (cur_input_ids == self.vision_config.spatial_width_output_token_id).sum() > len(cur_spatial_width_output_locations):
                         raise ValueError("The number of spatial tokens and input temporal location features should be the same.")
-                    
+
                     temporal_input_token_indices = torch.where(cur_input_ids == self.vision_config.temporal_input_token_id)[0]
                     temporal_output_token_indices = torch.where(cur_input_ids == self.vision_config.temporal_output_token_id)[0]
                     for i, index in enumerate(temporal_input_token_indices):
@@ -564,12 +633,45 @@ class LlavaMetaForCausalLM(ABC):
                     for i, index in enumerate(spatial_width_output_token_indices):
                         cur_spatial_width_location_feature = token_transfer(cur_spatial_width_output_locations[i], spatial_width_input_embeddings)
                         cur_new_input_embeds[index] = cur_spatial_width_location_feature
-                    
+
                     new_input_embeds.append(cur_new_input_embeds)
+
+            # DEBUG: Check lengths before stacking
+            rank0_print(f"🔍 new_input_embeds lengths: {[e.shape[0] for e in new_input_embeds]}")
+
             inputs_embeds = torch.stack(new_input_embeds, dim=0)
 
+            # DEBUG: Final shapes
+            rank0_print(f"🔍 After stacking - inputs_embeds: {inputs_embeds.shape}, attention_mask: {attention_mask.shape if attention_mask is not None else None}")
+
+        # Verify and update attention_mask and labels to match inputs_embeds length
+        if attention_mask is not None and inputs_embeds.shape[1] != attention_mask.shape[1]:
+            # This should NOT happen if preprocessing is correct, but we add a safety check
+            batch_size = inputs_embeds.shape[0]
+            seq_len = inputs_embeds.shape[1]
+
+            # Create new attention_mask and labels with correct length
+            new_attention_mask = torch.ones((batch_size, seq_len), dtype=attention_mask.dtype, device=attention_mask.device)
+            new_labels = torch.full((batch_size, seq_len), IGNORE_INDEX, dtype=labels.dtype, device=labels.device)
+
+            for i in range(batch_size):
+                old_len = attention_mask.shape[1]
+                if seq_len >= old_len:
+                    # Sequence got longer - copy old values and pad with 1s (attend) for new tokens
+                    new_attention_mask[i, :old_len] = attention_mask[i]
+                    new_labels[i, :old_len] = labels[i]
+                else:
+                    # Sequence got shorter - truncate
+                    new_attention_mask[i] = attention_mask[i, :seq_len]
+                    new_labels[i] = labels[i, :seq_len]
+
+            attention_mask = new_attention_mask
+            labels = new_labels
+
+            rank0_print(f"⚠️  WARNING: attention_mask length mismatch! Adjusted from {old_len} to {seq_len}")
+
         return None, position_ids, attention_mask, past_key_values, inputs_embeds, labels
-            
+
     def initialize_image_tokenizer(self, tokenizer):
         vision_config = self.get_model().vision_config
 
@@ -578,7 +680,7 @@ class LlavaMetaForCausalLM(ABC):
             [DEFAULT_IM_START_TOKEN, DEFAULT_IM_END_TOKEN, DEFAULT_IMAGE_PATCH_TOKEN])
 
         return num_new_tokens
-    
+
     def initialize_video_tokenizer(self, tokenizer):
         vision_config = self.get_model().vision_config
 
@@ -629,7 +731,7 @@ class LlavaMetaForCausalLM(ABC):
         vision_config.temporal_input_token_id = tokenizer.convert_tokens_to_ids([TEMPORAL_INPUT_TOKEN])[0]
         vision_config.temporal_output_token_id = tokenizer.convert_tokens_to_ids([TEMPORAL_OUTPUT_TOKEN])[0]
         _ = tokenizer.add_tokens(self.temporal_tokens, special_tokens=True)
-        
+
         # Neighboring Token Propagation (NTP)
         index_vec = torch.arange(num_temporal_tokens)
         self.model.temporal_reparam_mat = 2.**(-(index_vec[:, None] - index_vec[None]).abs())
@@ -663,7 +765,7 @@ class LlavaMetaForCausalLM(ABC):
     def initialize_embedings(self, num_new_tokens, num_cur_tokens, pretrain_mm_mlp_adapter=None):
 
         self.get_model().orig_embeds_params = [self.get_input_embeddings().weight.data.clone()]
-        
+
         self.resize_token_embeddings(num_cur_tokens)
         if hasattr(self.model.config, "text_config"):
             self.model.config.text_config.vocab_size = num_cur_tokens
