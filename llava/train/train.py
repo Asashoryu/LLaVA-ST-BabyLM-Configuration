@@ -1578,7 +1578,7 @@ def get_model(model_args, training_args, bnb_model_from_pretrained_args):
         }
         if training_args.model_max_length is None:
             training_args.model_max_length = cfg_pretrained.max_position_embeddings * model_args.rope_scaling_factor
-            overwrite_config["max_sequence_length"] = training_args.model_max_lengths
+            overwrite_config["max_sequence_length"] = training_args.model_max_length
         assert training_args.model_max_length == int(cfg_pretrained.max_position_embeddings * model_args.rope_scaling_factor), print(
             f"model_max_length: {training_args.model_max_length}, max_position_embeddings: {cfg_pretrained.max_position_embeddings}, rope_scaling_factor: {model_args.rope_scaling_factor}"
         )
