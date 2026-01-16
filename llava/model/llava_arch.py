@@ -629,7 +629,7 @@ class LlavaMetaForCausalLM(ABC):
                     spatial_width_output_token_indices = torch.where(cur_input_ids == self.vision_config.spatial_width_output_token_id)[0]
                     for i, index in enumerate(spatial_width_input_token_indices):
                         cur_spatial_width_location_feature = token_transfer(cur_spatial_width_input_locations[i], spatial_width_input_embeddings)
-                        cur_new_input_embeds[index]
+                        cur_new_input_embeds[index] = cur_spatial_width_location_feature
                     for i, index in enumerate(spatial_width_output_token_indices):
                         cur_spatial_width_location_feature = token_transfer(cur_spatial_width_output_locations[i], spatial_width_input_embeddings)
                         cur_new_input_embeds[index] = cur_spatial_width_location_feature

@@ -6,7 +6,7 @@
 #SBATCH --gres=gpu:1
 #SBATCH --mem=64G
 #SBATCH --time=48:00:00
-#SBATCH --partition=gpusL40
+#SBATCH --partition=gpusH100
 
 source ~/.bashrc
 conda activate llava-st
@@ -15,8 +15,8 @@ mkdir -p logs
 # ============================================================
 # 1 = _t, 2 = _ti, 3 = _tim
 # ============================================================
-EXP_ID=2
-PROJECT_VERSION=9
+EXP_ID=3
+PROJECT_VERSION=10
 
 # Insert checkpoint path if you want to resume: "output/ckpt_dinov2_new_ti/llama_ALL_SHARDS_ti/checkpoint-2000"
 MODEL_PATH="./baby_llama_baseline"
@@ -73,7 +73,7 @@ LR_SCHEDULER_TYPE="cosine"
 LOGGING_STEPS=2
 MODEL_MAX_LENGTH=32768
 GRADIENT_CHECKPOINTING=True
-DATALOADER_NUM_WORKERS=4
+DATALOADER_NUM_WORKERS=2
 LAZY_PREPROCESS=True
 REPORT_TO="wandb"
 IMAGE_ASPECT_RATIO="pad"

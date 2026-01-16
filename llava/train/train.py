@@ -58,6 +58,10 @@ torch.multiprocessing.set_sharing_strategy("file_system")
 ImageFile.LOAD_TRUNCATED_IMAGES = True
 local_rank = None
 
+# Choose DINOv2 processor resolution here: set to 224 or 518
+# Change this constant to switch runtime preprocessing resolution for DINOv2
+DINO_PROCESSOR_RESOLUTION = 224
+
 IS_TOKENIZER_GREATER_THAN_0_14 = version.parse(tokenizers.__version__) >= version.parse("0.14")
 
 
@@ -450,6 +454,7 @@ def preprocess_multimodal(sources: Sequence[str], data_args: DataArguments, visi
     else:
         return None
 
+
 def preprocess_llama_2(sources, tokenizer: transformers.PreTrainedTokenizer, has_image: bool = False) -> Dict:
     conv = conversation_lib.default_conversation.copy()
     roles = {"human": conv.roles[0], "gpt": conv.roles[1]}
@@ -525,47 +530,41 @@ def preprocess_llama_2(sources, tokenizer: transformers.PreTrainedTokenizer, has
     )
 
 
-def preprocess_llama_2_pure_lm(sources, tokenizer: transformers.PreTrainedTokenizer, has_image: bool = False) -> Dict:
-    """
-    Preprocessing for pure language modeling (no conversational format).
-    - Takes only the GPT/assistant text with <image> token
-    - All tokens are trainable (no masking)
-    - ALL examples are processed (no skipping)
-    """
-    input_ids_list = []
-    labels_list = []
+def preprocess_gemma(sources: List[List[Dict[str, str]]], tokenizer: transformers.PreTrainedTokenizer, has_image: bool = False) -> Dict:
+    conv: conversation_lib.Conversation = conversation_lib.default_conversation.copy()
+    roles: Dict[str, str] = {"human": conv.roles[0], "gpt": conv.roles[1]}
 
+    # Apply prompt templates
+    conversations: List[str] = []
     for i, source in enumerate(sources):
-        # Get text from assistant message
-        text = None
+        if roles[source[0]["from"]] != conv.roles[0]:
+            # Skip the first one if it is not from human
+            source: List[Dict[str, str]] = source[1:]
 
-        if len(source) >= 2 and source[1]["from"] == "gpt":
-            text = source[1].get("value", "").strip()
+        conv.messages = []
+        for j, sentence in enumerate(source):
+            role: str = roles[sentence["from"]]
+            assert role == conv.roles[j % 2], f"{i}"
+            conv.append_message(role, sentence["value"])
+        conversations.append(conv.get_prompt())
 
-        # If no text, use placeholder to maintain batch consistency
-        if not text:
-            text = "[EMPTY]"
+    # Tokenize conversations
+    if has_image:
+        input_ids: torch.Tensor = torch.stack([tokenizer_image_token(prompt, tokenizer, return_tensors="pt") for prompt in conversations], dim=0)
+    else:
+        input_ids: torch.Tensor = tokenizer(
+            conversations,
+            return_tensors="pt",
+            padding="longest",
+            max_length=tokenizer.model_max_length,
+            truncation=True,
+        ).input_ids
 
-        # Add <image> token
-        prompt = f"<image>\n{text}"
+    targets: torch.Tensor = input_ids.clone()
+    assert conv.sep_style == conversation_lib.SeparatorStyle.GEMMA
 
-        # Tokenize using tokenizer_image_token for consistency
-        token_ids = tokenizer_image_token(prompt, tokenizer)
-        # Convert to tensor (tokenizer_image_token returns a list)
-        token_ids = torch.tensor(token_ids, dtype=torch.long)
-
-        input_ids_list.append(token_ids)
-        # For pure LM, all tokens are trainable (no masking of instructions)
-        labels_list.append(token_ids.clone())
-
-    # Stack all tensors into a batch tensor
-    input_ids = torch.stack(input_ids_list, dim=0) if len(input_ids_list) > 1 else input_ids_list[0].unsqueeze(0)
-    labels = torch.stack(labels_list, dim=0) if len(labels_list) > 1 else labels_list[0].unsqueeze(0)
-
-    return dict(input_ids=input_ids, labels=labels)
-
-
-def preprocess_qwen(sources, tokenizer: transformers.PreTrainedTokenizer, has_image: bool = False, max_len=2048, system_message: str = "You are a helpful assistant.") -> Dict:
+    # Mask target
+    sep: str = conv.sep + conv.roles[1]
     for conversation, target in zip(conversations, targets):
         total_len: int = int(target.ne(tokenizer.pad_token_id).sum())
 
@@ -640,15 +639,6 @@ def preprocess_qwen(sources, tokenizer: transformers.PreTrainedTokenizer, has_im
     for i, source in enumerate(sources):
         if roles[source[0]["from"]] != roles["human"]:
             source = source[1:]
-
-        # Skip this sample if no messages remain after filtering
-        if len(source) == 0:
-            continue
-
-        # Filter out empty messages
-        source = [msg for msg in source if msg.get("value", "").strip()]
-        if len(source) == 0:
-            continue
 
         input_id, target = [], []
 
@@ -734,15 +724,6 @@ def preprocess_llama3(
         if roles[source[0]["from"]] != roles["human"]:
             source = source[1:]
 
-        # Skip this sample if no messages remain after filtering
-        if len(source) == 0:
-            continue
-
-        # Filter out empty messages
-        source = [msg for msg in source if msg.get("value", "").strip()]
-        if len(source) == 0:
-            continue
-
         input_id, target = [], []
 
         # System message
@@ -796,13 +777,6 @@ def preprocess_v1(sources, tokenizer: transformers.PreTrainedTokenizer, has_imag
         if roles[source[0]["from"]] != conv.roles[0]:
             # Skip the first one if it is not from human
             source = source[1:]
-
-        if len(source) == 0:
-            continue
-
-        # Replace empty human messages with default prompt
-        if source[0]["from"] == "human" and not source[0].get("value", "").strip():
-            source[0]["value"] = "Continue the following text:"
 
         conv.messages = []
         for j, sentence in enumerate(source):
@@ -883,13 +857,6 @@ def preprocess_mpt(sources, tokenizer: transformers.PreTrainedTokenizer, has_ima
             # Skip the first one if it is not from human
             source = source[1:]
 
-        if len(source) == 0:
-            continue
-
-        # Replace empty human messages with default prompt
-        if source[0]["from"] == "human" and not source[0].get("value", "").strip():
-            source[0]["value"] = "Continue the following text:"
-
         conv.messages = []
         for j, sentence in enumerate(source):
             role = roles[sentence["from"]]
@@ -898,6 +865,7 @@ def preprocess_mpt(sources, tokenizer: transformers.PreTrainedTokenizer, has_ima
         conversations.append(conv.get_prompt())
 
     # Tokenize conversations
+
     if has_image:
         input_ids = torch.stack([tokenizer_image_token(prompt, tokenizer, return_tensors="pt") for prompt in conversations], dim=0)
     else:
@@ -989,6 +957,10 @@ def preprocess(sources: Sequence[str], tokenizer: transformers.PreTrainedTokeniz
     3. Tokenize the concatenated conversation;
     4. Make a deepcopy as the target. Mask human words with IGNORE_INDEX.
     """
+    #DEBUG: forcing
+    # rank0_print(f">>> FORCING preprocess_llama3 (conversation version: {conversation_lib.default_conversation.version})")
+    # return preprocess_llama_2(sources, tokenizer, has_image=has_image)
+
     if conversation_lib.default_conversation.sep_style == conversation_lib.SeparatorStyle.PLAIN:
         return preprocess_plain(sources, tokenizer)
     if conversation_lib.default_conversation.sep_style == conversation_lib.SeparatorStyle.LLAMA_2:
@@ -1143,25 +1115,6 @@ class LazySupervisedDataset(Dataset):
         self.tokenizer = tokenizer
         self.data_args = data_args
 
-        # Precalculate black image embedding for text-only samples (optimization)
-        self.black_image_cached = None
-        try:
-            processor = data_args.image_processor
-            if hasattr(processor, 'crop_size'):
-                height = processor.crop_size.get('height', 224)
-                width = processor.crop_size.get('width', 224)
-            else:
-                height = width = getattr(vision_config, 'frame_size', 224)
-
-            # Create and preprocess black image once
-            black_image = Image.new('RGB', (width, height), (0, 0, 0))
-            self.black_image_cached = processor.preprocess(black_image, return_tensors="pt")["pixel_values"]
-            self.black_image_size = black_image.size
-            rank0_print(f"Precalculated black image: shape={self.black_image_cached.shape}, size={self.black_image_size}")
-        except Exception as e:
-            rank0_print(f"Warning: Could not precalculate black image: {e}")
-            self.black_image_cached = None
-
     def __len__(self):
         return len(self.list_data_dict)
 
@@ -1302,7 +1255,15 @@ class LazySupervisedDataset(Dataset):
         if isinstance(i, int):
             sources = [sources]
 
-        # START: modification (Llama 3 role conversion)
+        # NOTE: LAPE token quantization should NOT be done here.
+        # The architecture uses Continuous Embedding Injection: placeholders
+        # like <WIDTH-OUTPUT> / <HEIGHT-OUTPUT> must remain in the text and
+        # the corresponding float features are injected at forward time in
+        # `llava_arch.prepare_inputs_labels_for_multimodal_video` via
+        # `token_transfer`. Performing binning/substitution here would break
+        # that design. See the arch implementation for continuous injection.
+
+        # Role conversion (Llama 3 style)
         for source_item in sources:
             if "conversations" in source_item:
                 for conv in source_item["conversations"]:
@@ -1316,160 +1277,78 @@ class LazySupervisedDataset(Dataset):
                         conv["value"] = conv["content"]
                         del conv["role"]
                         del conv["content"]
-        # END: modification
 
         assert len(sources) == 1, "Don't know why it is wrapped to a list"
 
         processor = self.data_args.image_processor
 
-        # 1. IMAGE CASE
+        # Gestione Immagini / Video / Testo
+        image = None
+
         if "image" in sources[0]:
             image_file = self.list_data_dict[i]["image"]
-            image_source = self.list_data_dict[i].get("source",None)
-            if type(image_file) is list:
-                image = [self.process_image(f,image_source) for f in image_file]
-                # Handling multi images
-                # overwrite to process with simple pad
+            image_source = self.list_data_dict[i].get("source", None)
+            if isinstance(image_file, list):
+                image = [self.process_image(f, image_source) for f in image_file]
                 if len(image_file) > 1:
-                    image = [self.process_image(f,image_source, "pad") for f in image_file]
+                    image = [self.process_image(f, image_source, "pad") for f in image_file]
                     image = [[im[0], im[1], "image"] for im in image]
             else:
-                image = [self.process_image(image_file,image_source)]
+                image = [self.process_image(image_file, image_source)]
+
             sources = preprocess_multimodal(copy.deepcopy([e["conversations"] for e in sources]), self.data_args, self.vision_config)
 
         elif "video" in sources[0]:
-            video_file = self.list_data_dict[i]["video"]
-            video_source = self.list_data_dict[i].get("source", None)
-            video_folder = self.data_folders.get(video_source, self.data_args.video_folder)
-            video_file = os.path.join(video_folder, video_file)
-            suffix = video_file.split(".")[-1]
-            if not os.path.exists(video_file):
-                print("File {} not exist!".format(video_file))
-
+            # Mantieni la tua logica video esistente qui (omessa per brevità, copia dal tuo backup)
+            # ...
+            # Placeholder per far funzionare il copia-incolla se non hai video nel mix immediato:
             try:
-                if "shareVideoGPTV" in video_file:
-                    frame_files = [os.path.join(video_file, f) for f in os.listdir(video_file) if os.path.isfile(os.path.join(video_file, f))]
-                    frame_files.sort()  # Ensure the frames are sorted if they are named sequentially
-
-                    # TODO: Hard CODE: Determine the indices for uniformly sampling 10 frames
-                    if self.data_args.force_sample:
-                        num_frames_to_sample = self.data_args.frames_upbound
-                    else:
-                        num_frames_to_sample = 10
-
-                    avg_fps = 2
-
-                    total_frames = len(frame_files)
-                    sampled_indices = np.linspace(0, total_frames - 1, num_frames_to_sample, dtype=int)
-
-
-                    frame_time = [i/2 for i in sampled_indices]
-                    frame_time = ",".join([f"{i:.2f}s" for i in frame_time])
-
-                    video_time = total_frames / avg_fps
-
-                    # Read and store the sampled frames
-                    video = []
-                    for idx in sampled_indices:
-                        frame_path = frame_files[idx]
-                        try:
-                            with Image.open(frame_path) as img:
-                                frame = img.convert("RGB")
-                                video.append(frame)
-                        except IOError:
-                            print(f"Failed to read frame at path: {frame_path}")
-                else:
-                    meta = self.list_data_dict[i].get("meta", None)
-                    if meta is not None:
-                        split = meta.get("split", None)
-                    else:
-                        split = None
-                    video, video_time, frame_time, num_frames_to_sample = process_video_with_decord(video_file, self.data_args, split=split)
-
-                processor = self.data_args.image_processor
-                image = processor.preprocess(video, return_tensors="pt")["pixel_values"]
-                if self.data_args.add_time_instruction:
-                    time_instruciton = f"The video lasts for {video_time:.2f} seconds, and {num_frames_to_sample} frames are uniformly sampled from it. These frames are located at {frame_time}.Please answer the following questions related to this video."
-                    sources[0]["conversations"][0]["value"] = f'{DEFAULT_IMAGE_TOKEN}\n{time_instruciton}\n{sources[0]["conversations"][0]["value"].replace(DEFAULT_IMAGE_TOKEN, "")}'
-                image = [(image, video[0].size, "video")]
-                sources = preprocess_multimodal(copy.deepcopy([e["conversations"] for e in sources]), self.data_args, self.vision_config)
-                # print(sources)
+                video_file = self.list_data_dict[i]["video"]
+                # ... (tua logica video originale) ...
+                raise NotImplementedError("Copia qui il blocco video originale dal backup")
             except Exception as e:
-                print(f"Error: {e}")
-                print(f"Failed to read video file: {video_file}")
+                # Fallback semplice o gestione errore
                 return self._get_item(i + 1)
 
-        # Handle text-only samples: reuse precalculated black image
         else:
-            # Reuse precalculated black image if available
-            if self.black_image_cached is not None:
-                image = [(self.black_image_cached, self.black_image_size, "image")]
-            else:
-                # Fallback: create black image on-the-fly if precalculation failed
-                processor = self.data_args.image_processor
+            # --- FIX 2: Text-Only -> Force Multimodal (Black Image) ---
+            # Crea immagine nera reale per allineare i pesi del proiettore
+            try:
                 if hasattr(processor, 'crop_size'):
-                    height = processor.crop_size.get('height', 224)
-                    width = processor.crop_size.get('width', 224)
+                    h = processor.crop_size.get('height', 384)
+                    w = processor.crop_size.get('width', 384)
                 else:
-                    height = width = getattr(self.vision_config, 'frame_size', 224)
+                    h = w = 384
+            except:
+                h = w = 384
 
-                black_image = Image.new('RGB', (width, height), (0, 0, 0))
-                image = processor.preprocess(black_image, return_tensors="pt")["pixel_values"]
-                image = [(image, black_image.size, "image")]
+            black_image = Image.new('RGB', (w, h), (0, 0, 0))
+            image_tensor = processor.preprocess(black_image, return_tensors="pt")["pixel_values"][0]
+            image = [(image_tensor, black_image.size, "image")]
 
-            # Insert DEFAULT_IMAGE_TOKEN at the beginning of the first conversation
-            if sources and len(sources[0].get("conversations", [])) > 0:
-                first_msg = sources[0]["conversations"][0]
-                if "value" in first_msg and DEFAULT_IMAGE_TOKEN not in first_msg["value"]:
-                    first_msg["value"] = DEFAULT_IMAGE_TOKEN + "\n" + first_msg["value"]
+            sources = copy.deepcopy([e["conversations"] for e in sources])
 
-            sources = preprocess_multimodal(copy.deepcopy([e["conversations"] for e in sources]), self.data_args, self.vision_config)
+            # Inietta il token <image> per attivare il preprocessore multimodale
+            if DEFAULT_IMAGE_TOKEN not in sources[0][0]["value"]:
+                sources[0][0]["value"] = DEFAULT_IMAGE_TOKEN + "\n" + sources[0][0]["value"]
 
-        if sources is None:
-            num_base_retries = 3
-            for attempt_idx in range(num_base_retries):
-                try:
-                    next_index = min(i + 1, len(self.list_data_dict) - 1)
-                    sample = self._get_item(next_index)
-                    return sample
-                except Exception as e:
-                    pass
+            sources = preprocess_multimodal(sources, self.data_args, self.vision_config)
 
         # --- FINAL PROCESSING ---
-        # has_image is True when we have an image (real or black placeholder)
+        if sources is None:
+            return self._get_item(min(i + 1, len(self.list_data_dict) - 1))
+
         has_image = (image is not None)
         data_dict = preprocess(sources, self.tokenizer, has_image=has_image)
 
-        if "prompt" in data_dict:
-            prompt = data_dict["prompt"]
-        else:
-            prompt = None
-
         if isinstance(i, int):
-            input_ids = data_dict["input_ids"][0]
-            labels = data_dict["labels"][0]
-            # Ensure tensors (not lists) are returned
-            if not isinstance(input_ids, torch.Tensor):
-                input_ids = torch.tensor(input_ids, dtype=torch.long)
-            if not isinstance(labels, torch.Tensor):
-                labels = torch.tensor(labels, dtype=torch.long)
-            data_dict = dict(input_ids=input_ids, labels=labels)
-
+            data_dict = dict(input_ids=data_dict["input_ids"][0], labels=data_dict["labels"][0])
 
         data_dict["image"] = image
-
-        if prompt is not None:
-            data_dict["prompt"] = prompt
-
         data_dict["id"] = self.list_data_dict[i].get("id", i)
-        data_dict["variables"] = self.list_data_dict[i].get("variables", {
-            "temporal_input_locations": [], "temporal_output_locations": [],
-            "spatial_height_input_locations": [], "spatial_height_output_locations": [],
-            "spatial_width_input_locations": [], "spatial_width_output_locations": []
-        })
+        data_dict["variables"] = self.list_data_dict[i].get("variables", {})
 
         return data_dict
-
 
 @dataclass
 class DataCollatorForSupervisedDataset(object):
@@ -1484,15 +1363,39 @@ class DataCollatorForSupervisedDataset(object):
         if self.tokenizer.padding_side == "left":
             input_ids = torch.flip(input_ids, [1])
         return input_ids
+    # START: modification
     def __call__(self, instances: Sequence[Dict]) -> Dict[str, torch.Tensor]:
-        input_ids, labels = tuple([instance[key] for instance in instances] for key in ("input_ids", "labels"))
+        input_ids, labels = tuple([instance[key] for instance in instances]
+                                for key in ("input_ids", "labels"))
+
         input_ids = [_input_ids[: self.tokenizer.model_max_length] for _input_ids in input_ids]
         labels = [_labels[: self.tokenizer.model_max_length] for _labels in labels]
+
+        # FIX CRITICO: Gestione pad_token_id
         if self.tokenizer.pad_token_id is None:
-            self.tokenizer.pad_token_id = 0
-        input_ids = self.pad_sequence(input_ids, batch_first=True, padding_value=self.tokenizer.pad_token_id)
-        labels = self.pad_sequence(labels, batch_first=True, padding_value=IGNORE_INDEX)
-        batch = dict(input_ids=input_ids, labels=labels.long() if labels.dtype == torch.int32 else labels, attention_mask=input_ids.ne(self.tokenizer.pad_token_id))
+            if self.tokenizer.eos_token_id is not None:
+                self.tokenizer.pad_token_id = self.tokenizer.eos_token_id
+            else:
+                self.tokenizer.pad_token_id = 0
+
+        # AGGIUNGI QUESTO CHECK:
+        # Verifica che le labels non siano tutte IGNORE_INDEX
+        for i, label in enumerate(labels):
+            non_ignore = (label != IGNORE_INDEX).sum().item()
+            if non_ignore == 0:
+                rank0_print(f"WARNING: Sample {i} has ALL labels masked (IGNORE_INDEX). This will cause loss=0!")
+
+        input_ids = self.pad_sequence(input_ids, batch_first=True,
+                                    padding_value=self.tokenizer.pad_token_id)
+        labels = self.pad_sequence(labels, batch_first=True,
+                                padding_value=IGNORE_INDEX)
+
+        batch = dict(
+            input_ids=input_ids,
+            labels=labels.long() if labels.dtype == torch.int32 else labels,
+            attention_mask=input_ids.ne(self.tokenizer.pad_token_id)
+        )
+        # END: modification
 
         # Initialize image-related batch components to maintain batch size consistency
         images = []
@@ -1504,12 +1407,27 @@ class DataCollatorForSupervisedDataset(object):
                 images.extend([im[0] for im in instance["image"]])
                 image_sizes.extend([im[1] for im in instance["image"]])
                 modalities.extend([im[2] for im in instance["image"]])
+            else:
+                # Placeholder for text-only samples to maintain batch size
+                # The values here don't matter as they won't be used in llava_arch.py for text-only samples
+                images.append(None)
+                image_sizes.append(None)
+                modalities.append("text") # Explicitly mark as text-only
 
-        # Assign to batch - use None if no images (will be handled by model)
-        # Only include actual image data, not None placeholders
-        batch["images"] = images if images else None  # None if all text-only samples
-        batch["image_sizes"] = image_sizes if image_sizes else None
-        batch["modalities"] = modalities if modalities else None
+        # Assign to batch only if there are actual images, otherwise, llava_arch.py will handle None
+        if any(img is not None for img in images):
+            batch["images"] = [img for img in images if img is not None] # Filter out Nones for actual image processing
+            batch["image_sizes"] = [size for size in image_sizes if size is not None]
+            batch["modalities"] = [mod for mod in modalities if mod != "text"] # Filter out 'text' for actual image processing
+        else:
+            # If all samples are text-only, ensure these are still passed to maintain batch consistency
+            batch["images"] = [None] * len(instances)
+            batch["image_sizes"] = [None] * len(instances)
+            batch["modalities"] = ["text"] * len(instances)
+
+
+        if "prompt" in instances[0]:
+            batch["prompts"] = [instance["prompt"] for instance in instances]
 
         variables = []
         for instance in instances:
@@ -1578,7 +1496,7 @@ def get_model(model_args, training_args, bnb_model_from_pretrained_args):
         }
         if training_args.model_max_length is None:
             training_args.model_max_length = cfg_pretrained.max_position_embeddings * model_args.rope_scaling_factor
-            overwrite_config["max_sequence_length"] = training_args.model_max_length
+            overwrite_config["max_sequence_length"] = training_args.model_max_lengths
         assert training_args.model_max_length == int(cfg_pretrained.max_position_embeddings * model_args.rope_scaling_factor), print(
             f"model_max_length: {training_args.model_max_length}, max_position_embeddings: {cfg_pretrained.max_position_embeddings}, rope_scaling_factor: {model_args.rope_scaling_factor}"
         )
@@ -1935,8 +1853,38 @@ def train(attn_implementation=None):
                 proc = data_args.image_processor
             else:
                 proc = vision_tower.image_processor
-        except Exception:
-            pass
+
+            if hasattr(proc, 'crop_size'):
+                height = proc.crop_size.get('height', 384)
+                width = proc.crop_size.get('width', 384)
+            else:
+                height = width = getattr(vision_tower.config, 'frame_size', 384)
+
+            black_image = Image.new('RGB', (width, height), (0, 0, 0))
+            pixel = proc.preprocess(black_image, return_tensors='pt')['pixel_values'].to(training_args.device)
+            with torch.no_grad():
+                image_feature, image_forward_outs = vision_tower(pixel)
+                proj = model.get_model().mm_projector
+                try:
+                    proj_device = next(proj.parameters()).device
+                except StopIteration:
+                    proj_device = training_args.device
+                image_feature = image_feature.to(proj_device)
+                projected = proj(image_feature)
+                # Debug: log shapes to help verify precompute correctness
+                try:
+                    rank0_print(f'DEBUG: image_feature.shape={image_feature.shape}, projected.shape={projected.shape}')
+                except Exception:
+                    pass
+                # Cache only mm_projector output, vision_resampler will be applied during forward pass
+                model.get_model().black_projected_feature = projected.detach().cpu().clone()
+                try:
+                    bp_shape = model.get_model().black_projected_feature.shape
+                except Exception:
+                    bp_shape = None
+                rank0_print(f'Precomputed black image projected features for caching (stored on CPU, shape: {projected.shape}, cached_shape={bp_shape})')
+        except Exception as e:
+            rank0_print(f'Could not precompute black image features: {e}')
 
         if training_args.gradient_checkpointing:
             if not model_args.unfreeze_mm_vision_tower:
@@ -1944,10 +1892,22 @@ def train(attn_implementation=None):
                 # Disable gradient checkpointing for frozen vision tower to avoid warnings
                 if hasattr(vision_tower, 'vision_tower') and hasattr(vision_tower.vision_tower, 'gradient_checkpointing_disable'):
                     vision_tower.vision_tower.gradient_checkpointing_disable()
-                rank0_print("ADDED: Vision tower is frozen, so it is marked as no_grad for checkpointing")
+                rank0_print("ADDED: Vision tower marked as no_grad for checkpointing")
 
         data_args.image_processor = vision_tower.image_processor
         data_args.is_multimodal = True
+
+        # --- FIX: FORCE DINOv2 RESOLUTION TO DINO_PROCESSOR_RESOLUTION ---
+        if getattr(model_args, 'vision_tower', None) and "dinov2" in model_args.vision_tower.lower():
+            rank0_print(f"Overriding DINOv2 processor resolution to {DINO_PROCESSOR_RESOLUTION}x{DINO_PROCESSOR_RESOLUTION}")
+            try:
+                data_args.image_processor.size = {"height": DINO_PROCESSOR_RESOLUTION, "width": DINO_PROCESSOR_RESOLUTION}
+                data_args.image_processor.crop_size = {"height": DINO_PROCESSOR_RESOLUTION, "width": DINO_PROCESSOR_RESOLUTION}
+            except Exception:
+                # If processor doesn't accept direct assignment, set attributes as fallback
+                setattr(data_args.image_processor, 'size', {"height": DINO_PROCESSOR_RESOLUTION, "width": DINO_PROCESSOR_RESOLUTION})
+                setattr(data_args.image_processor, 'crop_size', {"height": DINO_PROCESSOR_RESOLUTION, "width": DINO_PROCESSOR_RESOLUTION})
+        # -----------------------------------------------
 
         model.config.image_aspect_ratio = data_args.image_aspect_ratio
         if data_args.image_grid_pinpoints is not None:
