@@ -429,8 +429,9 @@ class LlavaMetaForCausalLM(ABC):
         # orig_embeds_params = getattr(self.get_model(), 'orig_embeds_params', None)
         orig_embeds_params = None
 
-        # DEBUG: Disable spatial embeddings during evaluation to test if they are causing the problem
-        use_spatial_embeddings = self.model.has_init_specific_embeddings and self.training
+        # Use spatial embeddings if the model initialized them.
+        # (Do not gate them on `self.training` — they are part of learned state.)
+        use_spatial_embeddings = self.model.has_init_specific_embeddings
 
         if use_spatial_embeddings:
             temporal_input_embeddings = reparam(self.model.temporal_input_embeddings.weight, self.model.temporal_reparam_mat)

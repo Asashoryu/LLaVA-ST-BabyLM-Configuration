@@ -100,8 +100,24 @@ class TokenPackerAttention(nn.Module):
         else:
             raise ValueError("Unexpected patch devide pattern")
 
+        # Flatten q/k/v so they share a common batch dimension for MHA.
+        # Current shapes are (a, b, c) where a=patch_elems, b=num_windows.
+        # MultiheadAttention expects (L, N, E) where N is batch. We set N=1
+        # by flattening windows into the sequence dimension: (a*b, 1, c).
+        q_shape = q.shape
+        k_shape = k.shape
+        v_shape = v.shape
+
+        q = q.reshape(q_shape[0] * q_shape[1], 1, c)
+        k = k.reshape(k_shape[0] * k_shape[1], 1, c)
+        v = v.reshape(v_shape[0] * v_shape[1], 1, c)
+
         out = self.attn(q, k, v, attn_mask=attn_mask)[0]
 
+        # Restore patch grouping: (a*b, 1, embed) -> (a, b, embed)
+        out = out.reshape(q_shape[0], q_shape[1], -1)
+
+        # Map back to original query spatial/temporal grid
         out = out.reshape(query_spatial_num, query_temporal_num, -1)
         out = out.permute(1, 0, 2)
         out = self.to_out(out)
@@ -180,7 +196,7 @@ class TokenPackerModule(nn.Module):
             # Key Windows = (key_grid / scale)^2
             # Quindi key_grid deve essere esattamente grid_size * scale.
 
-            scale = self.devide_attention.spatial_scale_factor
+            scale = getattr(self.devide_attention, 'spatial_scale_factor', 1)
             target_key_grid = self.grid_size * scale
 
             if actual_grid != target_key_grid:
@@ -196,14 +212,11 @@ class TokenPackerModule(nn.Module):
             x = F.interpolate(x, size=(self.num_temporal_latents,), mode='linear')
             x = x.permute(2, 0, 1).to(dtype)
 
-            # --- 3. Key/Value (Temporal Features) - FIX UNIVERSALE (TEMPORALE) ---
-            # Le chiavi devono avere dimensione = latents * scale_factor per generare lo stesso numero di finestre
-            target_t = self.num_temporal_latents * self.devide_attention.temporal_scale_factor
-
-            if x_multi.shape[0] != target_t:
-                x_multi = x_multi.reshape(x_multi.shape[0], -1, c).permute(1, 2, 0)
-                x_multi = F.interpolate(x_multi, size=(target_t,), mode='linear')
-                x_multi = x_multi.permute(2, 0, 1).to(dtype)
+            # NOTE: For temporal-only path we intentionally DO NOT resize x_multi here.
+            # The temporal path compresses the query (x) into `num_temporal_latents`,
+            # while x_multi (the full-resolution temporal features) should preserve
+            # the original temporal resolution so that the devide_attention can
+            # attend across the full temporal axis if needed.
 
         x = x + self.devide_attention(x, x_multi, attn_mask)
         return x
@@ -256,10 +269,12 @@ class TokenPacker(nn.Module):
 
         # Calcolo Scala Spaziale (Dinamico)
         grid_size_slow = int(self.slow_num_latents ** 0.5)
-        spatial_scale_slow = max(1, int(round(raw_grid_spatial / grid_size_slow)))
+        # Use floor division for scale to avoid creating target grids
+        # that are not compatible with latent grid sizes (fixes DINOv2 37x37 case)
+        spatial_scale_slow = max(1, int(math.floor(raw_grid_spatial / grid_size_slow)))
 
         grid_size_fast = int(self.fast_num_latents ** 0.5)
-        spatial_scale_fast = max(1, int(round(raw_grid_spatial / grid_size_fast)))
+        spatial_scale_fast = max(1, int(math.floor(raw_grid_spatial / grid_size_fast)))
 
         rank0_print(f"TokenPacker Init: InputGrid={raw_grid_spatial}, SlowScale={spatial_scale_slow}, FastScale={spatial_scale_fast}")
         rank0_print(f"TokenPacker: visual_dim={visual_dim} (features from mm_projector)")

@@ -1328,9 +1328,20 @@ class LazySupervisedDataset(Dataset):
 
             sources = copy.deepcopy([e["conversations"] for e in sources])
 
-            # Inietta il token <image> per attivare il preprocessore multimodale
-            if DEFAULT_IMAGE_TOKEN not in sources[0][0]["value"]:
-                sources[0][0]["value"] = DEFAULT_IMAGE_TOKEN + "\n" + sources[0][0]["value"]
+            # Inject the <image> token into the FIRST human turn (not blindly sources[0][0])
+            injected = False
+            for turn in sources[0]:
+                if turn.get("from") == "human":
+                    cur_val = turn.get("value", "")
+                    if DEFAULT_IMAGE_TOKEN not in cur_val:
+                        turn["value"] = DEFAULT_IMAGE_TOKEN + "\n" + cur_val
+                    injected = True
+                    break
+
+            if not injected:
+                # Fallback: preserve previous behavior (insert at position 0)
+                if DEFAULT_IMAGE_TOKEN not in sources[0][0].get("value", ""):
+                    sources[0][0]["value"] = DEFAULT_IMAGE_TOKEN + "\n" + sources[0][0].get("value", "")
 
             sources = preprocess_multimodal(sources, self.data_args, self.vision_config)
 
@@ -1420,10 +1431,13 @@ class DataCollatorForSupervisedDataset(object):
             batch["image_sizes"] = [size for size in image_sizes if size is not None]
             batch["modalities"] = [mod for mod in modalities if mod != "text"] # Filter out 'text' for actual image processing
         else:
-            # If all samples are text-only, ensure these are still passed to maintain batch consistency
-            batch["images"] = [None] * len(instances)
-            batch["image_sizes"] = [None] * len(instances)
-            batch["modalities"] = ["text"] * len(instances)
+            # If all samples are text-only, pass empty lists (not lists of None).
+            # `prepare_inputs_labels_for_multimodal_video` in `llava_arch.py` checks
+            # for `images is None` or an empty list — passing empty lists avoids
+            # attempting tensor ops on None and correctly triggers the text-only path.
+            batch["images"] = []
+            batch["image_sizes"] = []
+            batch["modalities"] = []
 
 
         if "prompt" in instances[0]:
