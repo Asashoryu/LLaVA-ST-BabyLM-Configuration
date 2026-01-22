@@ -1122,7 +1122,17 @@ class LazySupervisedDataset(Dataset):
     def lengths(self):
         length_list = []
         for sample in self.list_data_dict:
-            img_tokens = 128 if "image" in sample else 0
+            img_tokens = 0
+            # Prefer explicit image token count from vision_config when available
+            try:
+                if "image" in sample:
+                    img_tokens = int(self.vision_config.image_token_num)
+                elif getattr(self.data_args, 'is_multimodal', False):
+                    # Treat missing image in a multimodal dataset as a black image placeholder
+                    img_tokens = int(self.vision_config.image_token_num)
+            except Exception:
+                # Fallback heuristic
+                img_tokens = 128 if "image" in sample else 0
             length_list.append(sum(len(conv["value"].split()) for conv in sample["conversations"]) + img_tokens)
         return length_list
 
@@ -1132,7 +1142,8 @@ class LazySupervisedDataset(Dataset):
         for sample in self.list_data_dict:
             cur_len = sum(len(conv["value"].split()) for conv in sample["conversations"])
             assert cur_len > 0, f"Conversation length is 0 for {sample}"
-            if "image" in sample or "video" in sample or self.data_args.early_mix_text:
+            if "image" in sample or "video" in sample or self.data_args.early_mix_text or getattr(self.data_args, 'is_multimodal', False):
+                # If the dataset is multimodal, treat missing images as multimodal examples
                 length_list.append(cur_len)
             else:
                 length_list.append(-cur_len)
@@ -1347,7 +1358,23 @@ class LazySupervisedDataset(Dataset):
 
         # --- FINAL PROCESSING ---
         if sources is None:
-            return self._get_item(min(i + 1, len(self.list_data_dict) - 1))
+            # preprocess_multimodal returned None; force a safe fallback instead of skipping the sample
+            rank0_print(f"⚠️ preprocess_multimodal returned None for sample {i}; forcing text fallback and image injection if multimodal")
+            raw_sample = self.list_data_dict[i]
+            sources = copy.deepcopy([e["conversations"] for e in [raw_sample]])
+            if getattr(self.data_args, 'is_multimodal', False):
+                injected = False
+                for turn in sources[0]:
+                    if turn.get("from") == "human":
+                        cur_val = turn.get("value", "")
+                        if DEFAULT_IMAGE_TOKEN not in cur_val:
+                            turn["value"] = DEFAULT_IMAGE_TOKEN + "\n" + cur_val
+                        injected = True
+                        break
+                if not injected:
+                    if DEFAULT_IMAGE_TOKEN not in sources[0][0].get("value", ""):
+                        sources[0][0]["value"] = DEFAULT_IMAGE_TOKEN + "\n" + sources[0][0].get("value", "")
+            # continue processing normally (we no longer skip the sample)
 
         has_image = (image is not None)
         data_dict = preprocess(sources, self.tokenizer, has_image=has_image)
@@ -1874,6 +1901,16 @@ def train(attn_implementation=None):
             else:
                 height = width = getattr(vision_tower.config, 'frame_size', 384)
 
+            # Align vision_config.image_token_num to config perceiver latents when available
+            try:
+                vcfg = model.get_model().vision_config
+                cfg = model.get_model().config
+                if hasattr(cfg, 'mm_perceiver_latents') and cfg.mm_perceiver_latents:
+                    vcfg.image_token_num = int(cfg.mm_perceiver_latents)
+                    rank0_print(f"Set vision_config.image_token_num from mm_perceiver_latents={vcfg.image_token_num}")
+            except Exception:
+                pass
+
             black_image = Image.new('RGB', (width, height), (0, 0, 0))
             pixel = proc.preprocess(black_image, return_tensors='pt')['pixel_values'].to(training_args.device)
             with torch.no_grad():
@@ -1890,7 +1927,48 @@ def train(attn_implementation=None):
                     rank0_print(f'DEBUG: image_feature.shape={image_feature.shape}, projected.shape={projected.shape}')
                 except Exception:
                     pass
-                # Cache only mm_projector output, vision_resampler will be applied during forward pass
+                # Apply the vision resampler so the cached black feature matches the
+                # representation used downstream (particularly for fast_slow_resampler).
+                def _apply_resampler_safe(proj_feat, resampler):
+                    if resampler is None:
+                        return proj_feat
+                    # Normalize possible list/tuple containers
+                    res = resampler
+                    if isinstance(resampler, (list, tuple)) and len(resampler) > 0:
+                        res = resampler[0]
+                    try:
+                        out = res(proj_feat)
+                    except Exception:
+                        try:
+                            out = res(proj_feat, slow=False)
+                        except Exception:
+                            return proj_feat
+                    # If out is tuple/list, pick the tensor with the largest token dim
+                    if isinstance(out, (list, tuple)):
+                        tensors = [o for o in out if isinstance(o, torch.Tensor)]
+                        if len(tensors) == 0:
+                            return proj_feat
+                        out = max(tensors, key=lambda t: t.shape[1] if t.dim() >= 2 else 0)
+                    if isinstance(out, torch.Tensor):
+                        return out
+                    return proj_feat
+
+                try:
+                    vision_resampler = model.get_model().vision_resampler
+                except Exception:
+                    vision_resampler = None
+                # Debug info: resampler type and shapes
+                try:
+                    rank0_print(f'DEBUG: vision_resampler={type(vision_resampler)}, projected.shape_before={projected.shape}')
+                except Exception:
+                    pass
+                projected = _apply_resampler_safe(projected, vision_resampler)
+                try:
+                    rank0_print(f'DEBUG: projected.shape_after_resampler={projected.shape}')
+                except Exception:
+                    pass
+
+                # Cache the resampled projector output on CPU
                 model.get_model().black_projected_feature = projected.detach().cpu().clone()
                 try:
                     bp_shape = model.get_model().black_projected_feature.shape

@@ -1151,10 +1151,39 @@ class DPODataset(Dataset):
 
         else:
             sources = copy.deepcopy([e["conversations"] for e in sources])
+            # If multimodal dataset but no image provided, inject an <image> placeholder into the first human turn
+            if getattr(self.data_args, 'is_multimodal', False):
+                injected = False
+                for turn in sources[0]:
+                    if turn.get("from") == "human":
+                        cur_val = turn.get("value", "")
+                        if DEFAULT_IMAGE_TOKEN not in cur_val:
+                            turn["value"] = DEFAULT_IMAGE_TOKEN + "\n" + cur_val
+                        injected = True
+                        break
+                if not injected:
+                    if DEFAULT_IMAGE_TOKEN not in sources[0][0].get("value", ""):
+                        sources[0][0]["value"] = DEFAULT_IMAGE_TOKEN + "\n" + sources[0][0].get("value", "")
 
         has_image = ("image" in self.list_data_dict[i]) or ("video" in self.list_data_dict[i])
-        # data_dict = preprocess(sources, self.tokenizer, has_image=has_image)
+        # Build data_dict and ensure conversations reflect the injected placeholder
         data_dict = copy.deepcopy(self.list_data_dict[i])  # inplace modification following
+        data_dict["conversations"] = sources[0]
+
+        # If dataset is multimodal but sample lacks an image, insert a black image tensor consistent with processor
+        if ("image" not in self.list_data_dict[i]) and getattr(self.data_args, 'is_multimodal', False):
+            try:
+                proc = self.data_args.image_processor
+                if hasattr(proc, 'crop_size'):
+                    h = proc.crop_size.get('height', 224)
+                    w = proc.crop_size.get('width', 224)
+                else:
+                    h = w = 224
+                black_image = Image.new('RGB', (w, h), (0, 0, 0))
+                pixel = proc.preprocess(black_image, return_tensors='pt')["pixel_values"][0]
+                data_dict["image"] = [(pixel, (w, h), "image")]
+            except Exception:
+                data_dict["image"] = [(torch.zeros(3, 224, 224), (224, 224), "text")]
 
         if "prompt" in data_dict:
             prompt = data_dict["prompt"]
