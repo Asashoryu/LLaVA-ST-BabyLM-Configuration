@@ -23,8 +23,10 @@ from transformers import AutoConfig, AutoModelForCausalLM, LlamaConfig
 from torch.nn import CrossEntropyLoss
 
 
-# , LlamaModel, LlamaForCausalLM, GenerationConfig
-# from .modeling_llama import LlamaModel, LlamaForCausalLM
+# We use the standard HF Llama classes and extend them with LLaVA-specific
+# multimodal functionality implemented in `llava_arch`.
+# The file defines lightweight wrappers so HuggingFace `AutoModel*` APIs
+# can construct LLaVA-capable models that accept images + text.
 from transformers import LlamaModel, LlamaForCausalLM
 from transformers.modeling_outputs import CausalLMOutputWithPast
 from transformers.generation.utils import GenerateOutput
@@ -33,7 +35,14 @@ from llava.model.llava_arch import LlavaMetaModel, LlavaMetaForCausalLM
 
 
 class LlavaConfig(LlamaConfig):
+    """Configuration for LLaVA-wrapped Llama models.
+
+    Inherits all standard `LlamaConfig` options and adds a few convenient
+    generation defaults so the model config is ready for inference out of
+    the box.
+    """
     model_type = "llava_llama"
+    # Generation defaults stored on the config for convenience.
     temperature: float = 0.0  # reset to 0.0, previously 0.9 for Vicuna
     max_new_tokens: int = 1024
     do_sample: bool = False
@@ -42,24 +51,41 @@ class LlavaConfig(LlamaConfig):
 
 
 class LlavaLlamaModel(LlavaMetaModel, LlamaModel):
+    """Combined model class.
+
+    This class uses multiple inheritance to merge LLaVA's multimodal helpers
+    (from `LlavaMetaModel`) with the Llama transformer implementation
+    (`LlamaModel`). The result is a backbone that understands image tokens
+    and the associated spatial/temporal embeddings.
+    """
     config_class = LlavaConfig
 
     def __init__(self, config: LlamaConfig):
+        # Cooperative initialization via the MRO ensures both mixins are set up.
         super(LlavaLlamaModel, self).__init__(config)
 
 
 class LlavaLlamaForCausalLM(LlamaForCausalLM, LlavaMetaForCausalLM):
+    """Top-level model class exposed to HuggingFace APIs.
+
+    Behaves like a standard `LlamaForCausalLM` but supports multimodal inputs
+    (images + text). It wraps a `LlavaLlamaModel` backbone and a language-model
+    head. Custom forwarding logic prepares multimodal embeddings before
+    delegating to the transformer.
+    """
     config_class = LlavaConfig
 
     def __init__(self, config):
+        # Initialize HF wrapper which prepares generation utilities.
         LlamaForCausalLM.__init__(self, config)
 
-        # configure default generation settings
+        # Ensure the model type is set so HF serialization/registration works
         config.model_type = "llava_llama"
 
+        # Build the combined backbone and an LM head
         self.model = LlavaLlamaModel(config)
         self.lm_head = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
-        # Initialize weights and apply final processing
+        # Final HF initialization step (weight init, tie weights, etc.)
         self.post_init()
 
     def get_model(self):
@@ -86,6 +112,10 @@ class LlavaLlamaForCausalLM(LlamaForCausalLM, LlavaMetaForCausalLM):
         **kwargs
     ) -> Union[Tuple, CausalLMOutputWithPast]:
 
+        # Prepare multimodal inputs when `inputs_embeds` is not already provided.
+        # This converts images (or video frames) into a sequence of embeddings
+        # and computes the corresponding position/attention tensors so the
+        # Llama backbone can consume them as if they were token embeddings.
         if inputs_embeds is None:
             (input_ids, position_ids, attention_mask, past_key_values, inputs_embeds, labels) = self.prepare_inputs_labels_for_multimodal_video(input_ids, position_ids, attention_mask, past_key_values, labels, images, modalities, image_sizes)
 
@@ -152,9 +182,13 @@ class LlavaLlamaForCausalLM(LlamaForCausalLM, LlavaMetaForCausalLM):
         if "inputs_embeds" in kwargs:
             raise NotImplementedError("`inputs_embeds` is not supported")
 
+        # During generation we accept `images` as well; if present convert them
+        # into `inputs_embeds` using the same multimodal preprocessing so the
+        # generation routine runs on embeddings rather than raw token ids.
         if images is not None:
             (inputs, position_ids, attention_mask, _, inputs_embeds, _) = self.prepare_inputs_labels_for_multimodal_video(inputs, position_ids, attention_mask, None, None, images, modalities, image_sizes=image_sizes)
         else:
+            # Text-only generation: obtain token embeddings from the embed layer.
             inputs_embeds = self.get_model().embed_tokens(inputs)
 
         return super().generate(position_ids=position_ids, attention_mask=attention_mask, inputs_embeds=inputs_embeds, **kwargs)
@@ -170,5 +204,8 @@ class LlavaLlamaForCausalLM(LlamaForCausalLM, LlavaMetaForCausalLM):
         return inputs
 
 
+# Register the custom config and model implementations with HuggingFace so
+# calls like `AutoModelForCausalLM.from_pretrained(..., config=...)` will
+# instantiate the LLaVA-aware classes when appropriate.
 AutoConfig.register("llava_llama", LlavaConfig)
 AutoModelForCausalLM.register(LlavaConfig, LlavaLlamaForCausalLM)

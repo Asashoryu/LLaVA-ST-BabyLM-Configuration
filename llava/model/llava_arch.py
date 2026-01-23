@@ -32,7 +32,31 @@ from llava.mm_utils import get_anyres_image_grid_shape
 from llava.utils import rank0_print, rank_print
 import random
 
+"""LLaVA multimodal utilities and model mixins.
+
+This module contains the shared multimodal helpers used to augment a
+causal LLM (Llama) with vision capabilities. Key responsibilities:
+- token/position interpolation utilities (`position_transfer`, `token_transfer`)
+- reparameterization helper (`reparam`) used to adapt learned spatial/temporal
+    embeddings via small reparam matrices (Neighboring Token Propagation).
+- `VisionConfig` — lightweight container of vision token ids / sizes.
+- `LlavaMetaModel` and `LlavaMetaForCausalLM` mixins that register vision
+    modules, initialize special spatial/temporal embeddings, and prepare
+    multimodal inputs (image patch embeddings spliced into text token streams).
+
+Notes:
+- Several reparam matrices are created and registered as buffers so they
+    appear in model state dicts; missing these at save time can cause the
+    model to initialize them at load time with defaults (see training/save
+    paths to ensure they are persisted).
+"""
+
 def position_transfer(position, num_temporal_tokens):
+    """Convert a normalized [0,1] position into neighboring token indices.
+
+    Returns the floor/ceil indices and interpolation ratio used to linearly
+    interpolate between discrete temporal/spatial embedding tokens.
+    """
     position = np.clip(position, 0, 1)
     embed_position = position * (num_temporal_tokens - 1)
     floor_position = math.floor(embed_position)
@@ -41,6 +65,11 @@ def position_transfer(position, num_temporal_tokens):
     return floor_position, ceil_position, ratio
 
 def token_transfer(position, temporal_embed_tokens, return_position=False):
+    """Interpolate token embeddings at a fractional position.
+
+    Uses `position_transfer` to compute indices and returns the interpolated
+    embedding feature. Optionally returns the discrete positions and ratio.
+    """
     position = np.clip(position, 0, 1)
     floor_position, ceil_position, ratio = position_transfer(position, temporal_embed_tokens.shape[0])
     ret_feature = temporal_embed_tokens[floor_position] * (1 - ratio) + temporal_embed_tokens[ceil_position] * ratio
@@ -50,11 +79,25 @@ def token_transfer(position, temporal_embed_tokens, return_position=False):
         return ret_feature
 
 def reparam(weight, reparam_mat):
+    """Apply a small reparameterization transform to `weight`.
+
+    The operation computes a reparam-weight = R @ W and returns
+    W + (R@W - stop_gradient(R@W)). This pattern allows learned residual
+    adjustments to the base embeddings while keeping the transformed term
+    detached for certain gradient paths (used by the original LLaVA code).
+    """
     reparam_weight = reparam_mat.to(weight.dtype).to(weight.device) @ weight
     return weight + reparam_weight - reparam_weight.detach()
 
 class VisionConfig:
     def __init__(self):
+        """Lightweight container for vision-related token ids and sizes.
+
+        Instances of this class hold the special token ids used to mark image
+        and video regions in the text stream (start/end/patch tokens), as well
+        as constants like patch/frame sizes and the number of spatial/temporal
+        embedding tokens used by the model.
+        """
         self.slow_token = False
         self.fast_token = False
 
@@ -88,8 +131,11 @@ class LlavaMetaModel:
 
     def __init__(self, config):
         super(LlavaMetaModel, self).__init__(config)
-
+        # Flag marking whether spatial/temporal special embeddings were created
         self.has_init_specific_embeddings = False
+        # If a vision tower is configured in the model config, build the
+        # vision backbone, resampler and projector. Some setups defer actual
+        # parameter initialization (delay_load) which the builders support.
         if hasattr(config, "mm_vision_tower"):
             delay_load = getattr(config, "delay_load", False)
             self.vision_tower = build_vision_tower(config, delay_load=delay_load)
@@ -107,26 +153,38 @@ class LlavaMetaModel:
             self.init_special_embeddings()
 
     def init_special_embeddings(self):
+        """Create spatial and temporal special embeddings and NTP reparam mats.
+
+        This method ensures the model has the learned embedding modules used to
+        inject spatial/temporal information and registers the Neighboring Token
+        Propagation (NTP) reparameterization matrices as buffers so they are
+        included in the model state dict. The reparam mats are small symmetric
+        matrices that bias nearby token interactions.
+        """
         self.has_init_specific_embeddings = True
 
-        # init spatial token embedding (only if not already present)
+        # Spatial height embeddings (input: embedding lookup, output: linear map)
         if not hasattr(self, 'spatial_height_input_embeddings'):
             self.spatial_height_input_embeddings = torch.nn.Embedding(self.vision_config.spatial_token_num, self.config.hidden_size)
         if not hasattr(self, 'spatial_height_output_embeddings'):
             self.spatial_height_output_embeddings = torch.nn.Linear(self.config.hidden_size, self.vision_config.spatial_token_num, bias=False)
 
+        # Spatial width embeddings
         if not hasattr(self, 'spatial_width_input_embeddings'):
             self.spatial_width_input_embeddings = torch.nn.Embedding(self.vision_config.spatial_token_num, self.config.hidden_size)
         if not hasattr(self, 'spatial_width_output_embeddings'):
             self.spatial_width_output_embeddings = torch.nn.Linear(self.config.hidden_size, self.vision_config.spatial_token_num, bias=False)
 
-        # init temporal token embedding (only if not already present)
+        # Temporal embeddings for frame/time injection
         if not hasattr(self, 'temporal_input_embeddings'):
             self.temporal_input_embeddings = torch.nn.Embedding(self.vision_config.fast_frame_num, self.config.hidden_size)
         if not hasattr(self, 'temporal_output_embeddings'):
             self.temporal_output_embeddings = torch.nn.Linear(self.config.hidden_size, self.vision_config.fast_frame_num, bias=False)
 
-        # Register reparam_mat as buffers (only if not already present)
+        # Register reparam matrices as buffers (persisted in state_dict). If a
+        # checkpoint is saved without these buffers present they will be absent
+        # on load and the model will re-initialize them at runtime — which may
+        # cause different multimodal behavior. Persisting them is important.
         if not hasattr(self, 'spatial_width_reparam_mat'):
             index_vec = torch.arange(self.vision_config.spatial_token_num)
             self.register_buffer("spatial_width_reparam_mat", 2.**(-(index_vec[:, None] - index_vec[None]).abs()))
@@ -137,6 +195,7 @@ class LlavaMetaModel:
             index_vec = torch.arange(self.vision_config.fast_frame_num)
             self.register_buffer("temporal_reparam_mat", 2.**(-(index_vec[:, None] - index_vec[None]).abs()))
 
+        # Keep config counters consistent with vision config
         self.config.num_temporal_tokens = self.vision_config.spatial_token_num
         self.config.num_spatial_tokens = self.vision_config.fast_frame_num
 
@@ -157,10 +216,14 @@ class LlavaMetaModel:
 
         vision_config.spatial_width_input_token_id = tokenizer.convert_tokens_to_ids([SPATIAL_WIDTH_INPUT_TOKEN])[0]
         vision_config.spatial_width_output_token_id = tokenizer.convert_tokens_to_ids([SPATIAL_WIDTH_OUTPUT_TOKEN])[0]
+        # For compatibility with code paths that set reparam mats on `self` rather
+        # than registering them as buffers, we create plain tensors here. The
+        # preferred approach is `init_special_embeddings` which registers buffers
+        # via `register_buffer` so they are saved/loaded automatically in state_dict.
         index_vec = torch.arange(self.vision_config.spatial_token_num)
         self.spatial_width_reparam_mat = 2.**(-(index_vec[:, None] - index_vec[None]).abs())
         self.spatial_height_reparam_mat = 2.**(-(index_vec[:, None] - index_vec[None]).abs())
-        # Neighboring Token Propagation (NTP)
+        # Neighboring Token Propagation (NTP) temporal matrix
         index_vec = torch.arange(self.vision_config.fast_frame_num)
         self.temporal_reparam_mat = 2.**(-(index_vec[:, None] - index_vec[None]).abs())
         return self.vision_config
@@ -172,6 +235,15 @@ class LlavaMetaModel:
         return vision_tower
 
     def initialize_vision_modules(self, model_args, tokenizer, fsdp=None):
+        """Initialize vision tower, resampler, and projector for the model.
+
+        This method is typically invoked during training setup to construct
+        and wire the vision backbone and related modules. It also configures
+        model attributes and flags used by the multimodal preprocessing
+        routines. When called during training, ensure the function runs before
+        saving checkpoints so that vision-specific buffers (e.g., reparam mats)
+        are present in the saved state.
+        """
         vision_tower = model_args.vision_tower
         mm_vision_select_layer = model_args.mm_vision_select_layer
         mm_vision_select_feature = model_args.mm_vision_select_feature
@@ -294,6 +366,12 @@ def unpad_image(tensor, original_size):
 
 
 class LlavaMetaForCausalLM(ABC):
+    """Mixin exposing multimodal helpers to a causal LM wrapper.
+
+    Classes that implement `get_model()` (returning the underlying model)
+    can inherit this mixin to gain image/video encoding and token insertion
+    utilities used to combine vision features with text token streams.
+    """
 
     @abstractmethod
     def get_model(self):
@@ -330,7 +408,15 @@ class LlavaMetaForCausalLM(ABC):
 
     def encode_images(self, images, split_sizes=None, modalities=None,
         temporal_information_injection=None, spatial_height_information_injection=None, spatial_width_information_injection=None):
-
+        # Encode a batch of images (or videos) and produce features ready for
+        # splicing into the token stream. This method includes several
+        # optimizations and injection hooks:
+        # - Black-image cache: if a cached `black_projected_feature` exists and
+        #   the input image is all zeros, the cached feature is reused to avoid
+        #   running the vision tower for text-only examples.
+        # - Spatial/temporal information injection: when special embeddings are
+        #   present, lightweight linear/upsample operations inject those signals
+        #   into per-patch features before returning them.
         if self.model.has_init_specific_embeddings and spatial_height_information_injection is not None:
             spatial_height_information_injection = spatial_height_information_injection.permute(1, 2, 0)
             spatial_width_information_injection = spatial_width_information_injection.permute(1, 2, 0)
@@ -340,7 +426,7 @@ class LlavaMetaForCausalLM(ABC):
         slow_image_features = []
         fast_image_features = []
 
-        # Initialize counter if it doesn't exist
+        # Counters used for reporting black-cache reuse statistics
         if not hasattr(self, '_black_cache_hit_count'):
             self._black_cache_hit_count = 0
             self._total_encode_count = 0
@@ -348,20 +434,16 @@ class LlavaMetaForCausalLM(ABC):
         for modality, image in zip(modalities, images):
             self._total_encode_count += 1
 
-            # OPTIMIZATION: Check if this is a black image (text-only sample) and use cached features
+            # OPTIMIZATION: Check if this is a black image (text-only sample)
+            # and use a projected cache if available to skip heavy vision work.
             is_black_image = False
             if hasattr(self.get_model(), 'black_projected_feature') and self.get_model().black_projected_feature is not None:
-                # Check if image is all zeros (black)
                 if torch.allclose(image, torch.zeros_like(image), atol=1e-6):
                     is_black_image = True
                     self._black_cache_hit_count += 1
-                    # Use cached projected features directly (skip vision tower + projector)
                     image_feature = self.get_model().black_projected_feature.to(image.device)
-                    # Expand to match batch size if needed
                     if image.shape[0] > 1:
                         image_feature = image_feature.expand(image.shape[0], -1, -1)
-
-                    # Log every 100 cache hits
                     if self._black_cache_hit_count % 100 == 0:
                         print(f"[Black Image Cache] Hits: {self._black_cache_hit_count}/{self._total_encode_count} ({100*self._black_cache_hit_count/self._total_encode_count:.1f}%)")
 
@@ -369,6 +451,8 @@ class LlavaMetaForCausalLM(ABC):
                 image_feature, image_forward_outs = self.get_model().get_vision_tower()(image)
                 image_feature = self.get_model().mm_projector(image_feature)
 
+            # If spatial/temporal embeddings are present, reshape and inject them
+            # into the per-patch features (LAPE-style additive injection).
             if self.model.has_init_specific_embeddings and spatial_height_information_injection is not None:
                 t, hw, _ = image_feature.shape
                 h = w = int(hw**0.5)
@@ -380,16 +464,14 @@ class LlavaMetaForCausalLM(ABC):
                 if modality == "image":
                     resize_temporal_information_injection = temporal_information_injection[0:1].unsqueeze(1) + temporal_information_injection.sum() * 0.
 
-                # LAPE
+                # LAPE: additive positional/temporal/height/width injection
                 image_feature = image_feature + resize_spatial_height_information_injection + resize_spatial_width_information_injection + resize_temporal_information_injection
 
                 image_feature = image_feature.reshape(t, hw, -1)
             if modality == 'video':
                 if 'fast_slow_resampler' in self.get_model().config.mm_resampler_type:
                     image_feature = self.get_model().vision_resampler(image_feature, slow=False)
-                    # slow_image_feature, fast_image_feature = self.get_model().vision_resampler(image_feature, slow=False)
                     if type(image_feature) == tuple:
-                        # image_feature = [self.get_model().mm_projector(i) for i in image_feature]
                         slow_image_features.append(image_feature[0])
                         fast_image_features.append(image_feature[1])
                     else:
@@ -426,14 +508,32 @@ class LlavaMetaForCausalLM(ABC):
         image_sizes=None,
         variables=None,
     ):
+        """Prepare token embeddings for mixed text+image inputs.
+
+        This is the heart of the multimodal preparation pipeline. Main steps:
+        1. Optionally apply reparameterization to the learned spatial/temporal
+           embeddings (via `reparam`) to produce injection features.
+        2. Concatenate these special embeddings to the token embedding table so
+           the model can lookup temporal/height/width tokens via `F.embedding`.
+        3. If no images are present, return early (text-only path).
+        4. Otherwise, encode images, convert per-patch features into token
+           embeddings, and splice them into the sequence at the special
+           start/end token locations.
+
+        Important: the reparam call applies small learned transforms (R @ W)
+        to base embeddings; those `reparam_mat` matrices must exist on the
+        model (ideally as registered buffers) so the transformed embeddings
+        are reproducible across save/load.
+        """
         # orig_embeds_params = getattr(self.get_model(), 'orig_embeds_params', None)
         orig_embeds_params = None
 
-        # Use spatial embeddings if the model initialized them.
-        # (Do not gate them on `self.training` — they are part of learned state.)
+        # Use spatial embeddings if the model initialized them. These are part
+        # of the learned model state and must be available at inference time.
         use_spatial_embeddings = self.model.has_init_specific_embeddings
 
         if use_spatial_embeddings:
+            # Apply reparameterization to produce the effective embeddings
             temporal_input_embeddings = reparam(self.model.temporal_input_embeddings.weight, self.model.temporal_reparam_mat)
             temporal_output_embeddings = reparam(self.model.temporal_output_embeddings.weight, self.model.temporal_reparam_mat)
             spatial_height_input_embeddings = reparam(self.model.spatial_height_input_embeddings.weight, self.model.spatial_height_reparam_mat)
@@ -441,11 +541,14 @@ class LlavaMetaForCausalLM(ABC):
             spatial_width_input_embeddings = reparam(self.model.spatial_width_input_embeddings.weight, self.model.spatial_width_reparam_mat)
             spatial_width_output_embeddings = reparam(self.model.spatial_width_output_embeddings.weight, self.model.spatial_width_reparam_mat)
 
+            # Average input/output variants to produce injection signals
             temporal_information_injection = ((temporal_input_embeddings + temporal_output_embeddings)/2).unsqueeze(1)
             spatial_height_information_injection = ((spatial_height_input_embeddings + spatial_height_output_embeddings)/2).unsqueeze(1)
             spatial_width_information_injection = ((spatial_width_input_embeddings + spatial_width_output_embeddings)/2).unsqueeze(1)
 
             device = self.get_model().embed_tokens.weight.device
+            # Extend the embedding table dynamically so special tokens can be
+            # looked up via the same `F.embedding` call.
             inputs_embeds = F.embedding(input_ids, torch.cat(
                 [self.get_model().embed_tokens.weight, temporal_input_embeddings.to(device), spatial_height_input_embeddings.to(device), spatial_width_input_embeddings.to(device)]
             ))
@@ -674,6 +777,14 @@ class LlavaMetaForCausalLM(ABC):
         return None, position_ids, attention_mask, past_key_values, inputs_embeds, labels
 
     def initialize_image_tokenizer(self, tokenizer):
+        """Add image-special tokens to the tokenizer and record their ids.
+
+        Adds start/end/patch tokens used to delimit image patch sequences in
+        the token stream and stores their numeric ids on the model's
+        `vision_config` for later use by the multimodal preprocessing code.
+        Returns the number of new tokens added so calling code can adjust
+        embedding tables if needed.
+        """
         vision_config = self.get_model().vision_config
 
         num_new_tokens = tokenizer.add_tokens([DEFAULT_IM_START_TOKEN, DEFAULT_IM_END_TOKEN, DEFAULT_IMAGE_PATCH_TOKEN], special_tokens=True)
@@ -683,6 +794,11 @@ class LlavaMetaForCausalLM(ABC):
         return num_new_tokens
 
     def initialize_video_tokenizer(self, tokenizer):
+        """Add video-special tokens to the tokenizer and record their ids.
+
+        If the vision config uses a 'slow' tokenization (fast/slow resampler),
+        additional slow-video tokens are also added.
+        """
         vision_config = self.get_model().vision_config
 
         num_new_tokens = tokenizer.add_tokens([DEFAULT_VID_START_TOKEN, DEFAULT_VID_END_TOKEN, DEFAULT_VIDEO_PATCH_TOKEN], special_tokens=True)
@@ -712,8 +828,11 @@ class LlavaMetaForCausalLM(ABC):
         _ = tokenizer.add_tokens(self.temporal_tokens, special_tokens=True)
         _ = tokenizer.add_tokens(self.spatial_height_tokens, special_tokens=True)
         _ = tokenizer.add_tokens(self.spatial_width_tokens, special_tokens=True)
-
         # Neighboring Token Propagation (NTP)
+        # When spatial/temporal token counts change, precompute the simple
+        # distance-decayed matrices used by `reparam`. These are attached to
+        # `self.model` for compatibility with older code paths; the preferred
+        # persistence mechanism is `register_buffer` inside `init_special_embeddings`.
         index_vec = torch.arange(num_spatial_tokens)
         self.model.spatial_width_reparam_mat = 2.**(-(index_vec[:, None] - index_vec[None]).abs())
         self.model.spatial_height_reparam_mat = 2.**(-(index_vec[:, None] - index_vec[None]).abs())
@@ -732,8 +851,7 @@ class LlavaMetaForCausalLM(ABC):
         vision_config.temporal_input_token_id = tokenizer.convert_tokens_to_ids([TEMPORAL_INPUT_TOKEN])[0]
         vision_config.temporal_output_token_id = tokenizer.convert_tokens_to_ids([TEMPORAL_OUTPUT_TOKEN])[0]
         _ = tokenizer.add_tokens(self.temporal_tokens, special_tokens=True)
-
-        # Neighboring Token Propagation (NTP)
+        # Neighboring Token Propagation (NTP) temporal matrix
         index_vec = torch.arange(num_temporal_tokens)
         self.model.temporal_reparam_mat = 2.**(-(index_vec[:, None] - index_vec[None]).abs())
 
@@ -755,7 +873,7 @@ class LlavaMetaForCausalLM(ABC):
         vision_config.spatial_width_output_token_id = tokenizer.convert_tokens_to_ids([SPATIAL_WIDTH_OUTPUT_TOKEN])[0]
         _ = tokenizer.add_tokens(self.spatial_width_tokens, special_tokens=True)
 
-        # Neighboring Token Propagation (NTP)
+        # Neighboring Token Propagation (NTP) spatial matrices
         index_vec = torch.arange(num_spatial_tokens)
         self.model.spatial_width_reparam_mat = 2.**(-(index_vec[:, None] - index_vec[None]).abs())
         self.model.spatial_height_reparam_mat = 2.**(-(index_vec[:, None] - index_vec[None]).abs())
@@ -764,6 +882,15 @@ class LlavaMetaForCausalLM(ABC):
         return num_new_tokens
 
     def initialize_embedings(self, num_new_tokens, num_cur_tokens, pretrain_mm_mlp_adapter=None):
+        """Resize token embedding tables and initialize new token vectors.
+
+        When new special tokens are added to the tokenizer, this helper resizes
+        the model embeddings to `num_cur_tokens` and initializes the newly
+        allocated rows by copying the mean of the existing embeddings. The
+        output embeddings (lm head) are likewise adjusted. If a pretrained
+        `pretrain_mm_mlp_adapter` is provided, its embed tokens can be used to
+        initialize the new slots instead.
+        """
 
         self.get_model().orig_embeds_params = [self.get_input_embeddings().weight.data.clone()]
 
@@ -780,6 +907,7 @@ class LlavaMetaForCausalLM(ABC):
             input_embeddings[-num_new_tokens:] = input_embeddings_avg
             output_embeddings[-num_new_tokens:] = output_embeddings_avg
 
+        # Ensure embedding gradients are enabled/disabled appropriately
         for p in self.get_input_embeddings().parameters():
             p.requires_grad = True
         for p in self.get_output_embeddings().parameters():
@@ -788,7 +916,7 @@ class LlavaMetaForCausalLM(ABC):
         if pretrain_mm_mlp_adapter:
             mm_projector_weights = torch.load(pretrain_mm_mlp_adapter, map_location='cpu')
             embed_tokens_weight = mm_projector_weights['model.embed_tokens.weight']
-            # assert num_new_tokens == 2
+            # If the adapter contains full embedding matrix, copy appropriate rows
             if input_embeddings.shape == embed_tokens_weight.shape:
                 input_embeddings[-num_new_tokens:] = embed_tokens_weight[-num_new_tokens:]
             elif embed_tokens_weight.shape[0] == num_new_tokens:
@@ -799,9 +927,12 @@ class LlavaMetaForCausalLM(ABC):
                     f"Current: {input_embeddings.shape}. Numer of new tokens: {num_new_tokens}.")
 
     def init_special_embeddings(self):
+        # Proxy to the model-side initializer that registers special embeddings
+        # and reparam buffers. Kept as a small helper for external callers.
         self.model.init_special_embeddings()
 
     @property
     def vision_config(self):
+        """Convenience property to access the underlying model's vision config."""
         return self.get_model().vision_config
 

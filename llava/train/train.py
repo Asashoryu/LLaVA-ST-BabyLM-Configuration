@@ -1975,6 +1975,26 @@ def train(attn_implementation=None):
                 except Exception:
                     bp_shape = None
                 rank0_print(f'Precomputed black image projected features for caching (stored on CPU, shape: {projected.shape}, cached_shape={bp_shape})')
+
+                # Sanity checks: ensure cached shape matches expected vision config and model hidden size
+                try:
+                    expected_tokens = None
+                    if hasattr(model.get_model(), 'vision_config') and hasattr(model.get_model().vision_config, 'image_token_num'):
+                        expected_tokens = model.get_model().vision_config.image_token_num
+                    expected_hidden = None
+                    if hasattr(model.get_model(), 'config') and hasattr(model.get_model().config, 'hidden_size'):
+                        expected_hidden = model.get_model().config.hidden_size
+                    if bp_shape is not None and expected_tokens is not None:
+                        if bp_shape[1] != expected_tokens:
+                            rank0_print(f"ERROR: black_projected_feature token dim ({bp_shape[1]}) != vision_config.image_token_num ({expected_tokens})")
+                            raise ValueError("black_projected_feature token dimension mismatch - training would be inconsistent with vision_config.image_token_num")
+                    if bp_shape is not None and expected_hidden is not None and bp_shape[2] != expected_hidden:
+                        rank0_print(f"ERROR: black_projected_feature hidden dim ({bp_shape[2]}) != model.config.hidden_size ({expected_hidden})")
+                        raise ValueError("black_projected_feature hidden dimension mismatch - training would be inconsistent with model hidden size")
+                except Exception as e:
+                    rank0_print(f"Exception during black_projected_feature sanity checks: {e}")
+                    raise
+
         except Exception as e:
             rank0_print(f'Could not precompute black image features: {e}')
 

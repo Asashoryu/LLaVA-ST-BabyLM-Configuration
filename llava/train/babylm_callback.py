@@ -6,6 +6,16 @@ from transformers import TrainerCallback
 from llava.utils import rank0_print
 from llava.constants import IGNORE_INDEX
 
+# Additional imports for checkpoint-triggered evaluation
+import re
+import json
+import time
+import os
+import sys
+import subprocess
+import threading
+import pathlib
+
 
 class BabyLMCheckpointCallback(TrainerCallback):
     """
@@ -354,6 +364,103 @@ class BabyLMCheckpointCallback(TrainerCallback):
                 rank0_print(f"❌ Errore rinomina: {e}")
                 self._save_metadata(original_dir, meta)
 
+                # If we couldn't rename, fall back to original_dir for eval
+                new_dir = original_dir
+
+        # --- Start background BLIMP fast evaluation on this checkpoint (non-blocking) ---
+        try:
+            # Only start eval from process 0 to avoid duplicates
+            if args.process_index == 0 or getattr(args, 'local_rank', -1) in [-1, 0]:
+                checkpoint_path = os.path.abspath(new_dir)
+                checkpoint_name = os.path.basename(checkpoint_path)
+                backend = os.environ.get('BABYLM_EVAL_BACKEND', 'causal')
+                # Use trainer args.output_dir if available for logging
+                train_output_dir = getattr(args, 'output_dir', None) or getattr(self.trainer.args, 'output_dir', None) if self.trainer is not None else None
+
+                def _eval_and_log():
+                    rank0_print(f"▶️ Launching BLIMP fast eval for checkpoint: {checkpoint_name}")
+                    log_path = os.path.join(checkpoint_path, 'blimp_eval_output.log')
+                    eval_output_dir = os.path.join(checkpoint_path, 'eval_results')
+                    os.makedirs(eval_output_dir, exist_ok=True)
+
+                    # Build evaluation command (BLIMP fast only)
+                    EVAL_FAST_BLIMP = os.path.join(os.path.dirname(os.path.dirname(__file__)), '..', '..', 'babylm_eval', 'evaluation_data', 'fast_eval', 'blimp_fast')
+                    cmd = [
+                        sys.executable, '-u', '-m', 'evaluation_pipeline.sentence_zero_shot.run',
+                        '--model_path_or_name', checkpoint_path,
+                        '--backend', backend,
+                        '--task', 'blimp',
+                        '--data_path', EVAL_FAST_BLIMP,
+                        '--save_predictions',
+                        '--revision_name', checkpoint_name,
+                        '--output_dir', eval_output_dir
+                    ]
+
+                    with open(log_path, 'w') as outf:
+                        # Ensure the evaluation package is importable by setting PYTHONPATH
+                        env_copy = os.environ.copy()
+                        eval_root = os.path.abspath(os.path.join(os.path.dirname(os.path.dirname(__file__)), '..', '..', 'babylm_eval'))
+                        existing = env_copy.get('PYTHONPATH', '')
+                        env_copy['PYTHONPATH'] = eval_root + (':' + existing if existing else '')
+                        proc = subprocess.Popen(cmd, stdout=outf, stderr=subprocess.STDOUT, env=env_copy)
+                        proc.wait()
+
+                    # Attempt to read the created report
+                    report_path = os.path.join(eval_output_dir, os.path.basename(checkpoint_path), checkpoint_name, 'zero_shot', backend, 'blimp', 'blimp_fast', 'best_temperature_report.txt')
+                    accuracy = None
+                    if os.path.exists(report_path):
+                        try:
+                            with open(report_path, 'r') as rf:
+                                lines = rf.read().splitlines()
+                            for i, line in enumerate(lines):
+                                if line.strip().upper().startswith('### AVERAGE') and i+1 < len(lines):
+                                    try:
+                                        accuracy = float(lines[i+1].strip())
+                                    except Exception:
+                                        pass
+                                    break
+                        except Exception as e:
+                            rank0_print(f"❌ Error reading BLIMP report: {e}")
+
+                    # Fallback: try to parse the log for a numeric line
+                    if accuracy is None:
+                        try:
+                            with open(log_path, 'r') as lf:
+                                for ln in reversed(lf.readlines()[-200:]):
+                                    stripped = ln.strip()
+                                    try:
+                                        # lines like: '1.0\t52.30' may exist (temp\tacc)
+                                        parts = stripped.split()[-1]
+                                        val = float(parts.strip())
+                                        accuracy = val
+                                        break
+                                    except Exception:
+                                        continue
+                        except Exception:
+                            pass
+
+                    timestamp = time.strftime('%Y-%m-%d %H:%M:%S')
+                    summary_line = f"{timestamp} | BLIMP_FAST | checkpoint={checkpoint_name} | accuracy={accuracy if accuracy is not None else 'N/A'} | report={report_path} | log={log_path}"
+
+                    # Append to a training-visible log (in trainer output dir if available)
+                    if train_output_dir is not None:
+                        try:
+                            out_log = os.path.join(train_output_dir, 'babylm_blimp_eval.log')
+                            with open(out_log, 'a') as f:
+                                f.write(summary_line + '\n')
+                        except Exception as e:
+                            rank0_print(f"❌ Could not write to train eval log: {e}")
+
+                    # Always print to trainer stdout so it appears in training logs
+                    rank0_print(f"📈 {summary_line}")
+
+                # Start thread (non-blocking)
+                t = threading.Thread(target=_eval_and_log, daemon=True)
+                t.start()
+        except Exception as e:
+            rank0_print(f"❌ Failed to launch BLIMP eval thread: {e}")
+
+        # Clean up pending metadata flag and return
         delattr(state, 'babylm_pending_metadata')
         return control
 

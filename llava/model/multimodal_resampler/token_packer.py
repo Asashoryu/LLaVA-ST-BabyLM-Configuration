@@ -271,10 +271,11 @@ class TokenPacker(nn.Module):
         grid_size_slow = int(self.slow_num_latents ** 0.5)
         # Use floor division for scale to avoid creating target grids
         # that are not compatible with latent grid sizes (fixes DINOv2 37x37 case)
-        spatial_scale_slow = max(1, int(math.floor(raw_grid_spatial / grid_size_slow)))
+        # NOTE: historic versions rounded differently (used ceil) — toggle to test inference compatibility
+        spatial_scale_slow = max(1, int(math.ceil(raw_grid_spatial / grid_size_slow)))
 
         grid_size_fast = int(self.fast_num_latents ** 0.5)
-        spatial_scale_fast = max(1, int(math.floor(raw_grid_spatial / grid_size_fast)))
+        spatial_scale_fast = max(1, int(math.ceil(raw_grid_spatial / grid_size_fast)))
 
         rank0_print(f"TokenPacker Init: InputGrid={raw_grid_spatial}, SlowScale={spatial_scale_slow}, FastScale={spatial_scale_fast}")
         rank0_print(f"TokenPacker: visual_dim={visual_dim} (features from mm_projector)")
