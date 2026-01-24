@@ -116,7 +116,9 @@ class VisionConfig:
         self.fast_frame_num = 100
         self.slow_frame_num = 20
 
-        self.image_token_num = 729
+        # Default to 256 to match fast_slow_resampler with use_downsample_image=False
+        # The encode_images function returns raw projected features (256) when not downsampling
+        self.image_token_num = 256
 
         self.spatial_token_num = 100
 

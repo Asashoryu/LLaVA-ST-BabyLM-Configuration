@@ -1901,15 +1901,8 @@ def train(attn_implementation=None):
             else:
                 height = width = getattr(vision_tower.config, 'frame_size', 384)
 
-            # Align vision_config.image_token_num to config perceiver latents when available
-            try:
-                vcfg = model.get_model().vision_config
-                cfg = model.get_model().config
-                if hasattr(cfg, 'mm_perceiver_latents') and cfg.mm_perceiver_latents:
-                    vcfg.image_token_num = int(cfg.mm_perceiver_latents)
-                    rank0_print(f"Set vision_config.image_token_num from mm_perceiver_latents={vcfg.image_token_num}")
-            except Exception:
-                pass
+            # DO NOT set image_token_num here - it will be set later based on mm_resampler_type and use_downsample_image
+            # This early setting caused mismatch issues when it conflicted with the later logic
 
             black_image = Image.new('RGB', (width, height), (0, 0, 0))
             pixel = proc.preprocess(black_image, return_tensors='pt')['pixel_values'].to(training_args.device)
@@ -1927,46 +1920,47 @@ def train(attn_implementation=None):
                     rank0_print(f'DEBUG: image_feature.shape={image_feature.shape}, projected.shape={projected.shape}')
                 except Exception:
                     pass
-                # Apply the vision resampler so the cached black feature matches the
-                # representation used downstream (particularly for fast_slow_resampler).
-                def _apply_resampler_safe(proj_feat, resampler):
-                    if resampler is None:
-                        return proj_feat
-                    # Normalize possible list/tuple containers
-                    res = resampler
-                    if isinstance(resampler, (list, tuple)) and len(resampler) > 0:
-                        res = resampler[0]
-                    try:
-                        out = res(proj_feat)
-                    except Exception:
-                        try:
-                            out = res(proj_feat, slow=False)
-                        except Exception:
-                            return proj_feat
-                    # If out is tuple/list, pick the tensor with the largest token dim
-                    if isinstance(out, (list, tuple)):
-                        tensors = [o for o in out if isinstance(o, torch.Tensor)]
-                        if len(tensors) == 0:
-                            return proj_feat
-                        out = max(tensors, key=lambda t: t.shape[1] if t.dim() >= 2 else 0)
-                    if isinstance(out, torch.Tensor):
-                        return out
-                    return proj_feat
 
-                try:
-                    vision_resampler = model.get_model().vision_resampler
-                except Exception:
-                    vision_resampler = None
-                # Debug info: resampler type and shapes
-                try:
-                    rank0_print(f'DEBUG: vision_resampler={type(vision_resampler)}, projected.shape_before={projected.shape}')
-                except Exception:
-                    pass
-                projected = _apply_resampler_safe(projected, vision_resampler)
-                try:
+                # CRITICAL: Match encode_images behavior for fast_slow_resampler
+                # When use_downsample_image=False (default), encode_images returns the raw projected features
+                # (256 tokens), NOT the resampled features. Only apply resampler if use_downsample_image=True.
+                use_downsample_image = getattr(model.model.config, "use_downsample_image", False)
+
+                if use_downsample_image and model_args.mm_resampler_type == "fast_slow_resampler":
+                    # Apply resampler only when use_downsample_image=True
+                    def _apply_resampler_safe(proj_feat, resampler):
+                        if resampler is None:
+                            return proj_feat
+                        res = resampler
+                        if isinstance(resampler, (list, tuple)) and len(resampler) > 0:
+                            res = resampler[0]
+                        try:
+                            out = res(proj_feat)
+                        except Exception:
+                            try:
+                                out = res(proj_feat, slow=False)
+                            except Exception:
+                                return proj_feat
+                        if isinstance(out, (list, tuple)):
+                            tensors = [o for o in out if isinstance(o, torch.Tensor)]
+                            if len(tensors) == 0:
+                                return proj_feat
+                            out = max(tensors, key=lambda t: t.shape[1] if t.dim() >= 2 else 0)
+                        if isinstance(out, torch.Tensor):
+                            return out
+                        return proj_feat
+
+                    try:
+                        vision_resampler = model.get_model().vision_resampler
+                    except Exception:
+                        vision_resampler = None
+                    rank0_print(f'DEBUG: Applying resampler (use_downsample_image=True), projected.shape_before={projected.shape}')
+                    projected = _apply_resampler_safe(projected, vision_resampler)
                     rank0_print(f'DEBUG: projected.shape_after_resampler={projected.shape}')
-                except Exception:
-                    pass
+                else:
+                    # Do NOT apply resampler - use raw projected features (256 tokens)
+                    # This matches encode_images behavior when use_downsample_image=False
+                    rank0_print(f'DEBUG: NOT applying resampler (use_downsample_image={use_downsample_image}), keeping projected.shape={projected.shape}')
 
                 # Cache the resampled projector output on CPU
                 model.get_model().black_projected_feature = projected.detach().cpu().clone()
@@ -2209,18 +2203,24 @@ def train(attn_implementation=None):
 
     # Configure the number of image placeholder tokens in the input text.
     # This determines how many im_patch tokens will replace each <image> placeholder during preprocessing.
-    # We need to determine the ACTUAL number of tokens produced by vision_tower + resampler pipeline.
+    # CRITICAL: For fast_slow_resampler with use_downsample_image=False (default),
+    # the encode_images function returns the ORIGINAL 256 tokens (not resampled),
+    # so image_token_num must be 256 to match.
     try:
-        # For fast_slow_resampler with DINOv2, the output is always 256 tokens (16x16 grid)
+        # For fast_slow_resampler with use_downsample_image=False, we use raw projected features (256 tokens)
         if model_args.mm_resampler_type == "fast_slow_resampler":
-            rank0_print("🔍 Detected fast_slow_resampler - using known output size")
-            # Fast_slow_resampler with DINOv2 produces 256 tokens (16x16)
-            vision_config.image_token_num = 256
-            rank0_print(f"✅ image_token_num set for fast_slow_resampler: {vision_config.image_token_num}")
+            use_downsample = getattr(model.model.config, "use_downsample_image", False)
+            if use_downsample:
+                # With downsampling, resampler output is used
+                vision_config.image_token_num = int(model_args.mm_perceiver_latents)
+                rank0_print(f"🔍 image_token_num set from mm_perceiver_latents (use_downsample_image=True): {vision_config.image_token_num}")
+            else:
+                # Without downsampling (default), raw projected features (256) are used
+                vision_config.image_token_num = 256
+                rank0_print(f"🔍 image_token_num=256 for fast_slow_resampler (use_downsample_image=False)")
         elif hasattr(model_args, "mm_perceiver_latents") and model_args.mm_perceiver_latents and int(model_args.mm_perceiver_latents) > 0:
-            # For other resamplers that actually compress, use mm_perceiver_latents
             vision_config.image_token_num = int(model_args.mm_perceiver_latents)
-            rank0_print(f"image_token_num set from mm_perceiver_latents: {vision_config.image_token_num}")
+            rank0_print(f"🔍 image_token_num set from mm_perceiver_latents: {vision_config.image_token_num}")
         else:
             # Fallback: use vision tower output size
             if hasattr(vision_tower, "num_patches_per_side"):
