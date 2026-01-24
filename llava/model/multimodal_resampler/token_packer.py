@@ -268,13 +268,13 @@ class TokenPacker(nn.Module):
                 raw_grid_spatial = 24  # Fallback
 
         # Calcolo Scala Spaziale (Dinamico)
-        grid_size_slow = int(self.slow_num_latents ** 0.5)
-        # Use floor division for scale to avoid creating target grids
-        # that are not compatible with latent grid sizes (fixes DINOv2 37x37 case)
-        # NOTE: historic versions rounded differently (used ceil) — toggle to test inference compatibility
+        # FIX: Use round() instead of int() for grid_size to match Gen 6 behavior
+        # Gen 6 had FastScale=7, which requires grid_size_fast=6 (from round(sqrt(32))=6)
+        # Using int() gives grid_size_fast=5 and FastScale=8, which hurts performance
+        grid_size_slow = int(round(self.slow_num_latents ** 0.5))
         spatial_scale_slow = max(1, int(math.ceil(raw_grid_spatial / grid_size_slow)))
 
-        grid_size_fast = int(self.fast_num_latents ** 0.5)
+        grid_size_fast = int(round(self.fast_num_latents ** 0.5))
         spatial_scale_fast = max(1, int(math.ceil(raw_grid_spatial / grid_size_fast)))
 
         rank0_print(f"TokenPacker Init: InputGrid={raw_grid_spatial}, SlowScale={spatial_scale_slow}, FastScale={spatial_scale_fast}")
