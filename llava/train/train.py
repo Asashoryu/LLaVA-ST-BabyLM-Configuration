@@ -1675,6 +1675,21 @@ def train(attn_implementation=None):
     4. Execute training loop with optional checkpointing
     5. Save final model and state
     """
+    # =========================================================================
+    # FIX: Set random seed EARLY for reproducible mm_projector/vision_resampler
+    # initialization. This ensures that trainable modules like mm_projector get
+    # the same random weights across runs. The HuggingFace Trainer sets its own
+    # seed (default 42) but only AFTER model initialization, so modules are
+    # initialized with different random states each run.
+    # =========================================================================
+    REPRODUCIBILITY_SEED = 42
+    random.seed(REPRODUCIBILITY_SEED)
+    np.random.seed(REPRODUCIBILITY_SEED)
+    torch.manual_seed(REPRODUCIBILITY_SEED)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(REPRODUCIBILITY_SEED)
+    rank0_print(f"🌱 Set reproducibility seed = {REPRODUCIBILITY_SEED} BEFORE model initialization")
+
     # Use local rank that is globally defined
     global local_rank
 

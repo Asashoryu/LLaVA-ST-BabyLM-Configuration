@@ -13,7 +13,7 @@
 # ======================================================
 # 🔧 CONFIGURAZIONE - Con Image Template FIX
 # ======================================================
-CHECKPOINT_DIR="/data1/ososovskyy/LLaVA-ST-BabyLM-Configuration/output/ckpt_mixed_6_tim/checkpoint-1258-9Mwords"
+CHECKPOINT_DIR="/data1/ososovskyy/LLaVA-ST-BabyLM-Configuration/output/ckpt_mixed_6_tim/checkpoint-14378-100Mwords"
 TASK="blimp"
 DATA_PATH="/data1/ososovskyy/babylm_eval/evaluation_data/fast_eval/blimp_fast"
 BATCH_SIZE=64

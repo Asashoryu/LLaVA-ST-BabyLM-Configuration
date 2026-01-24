@@ -198,8 +198,9 @@ class LlavaMetaModel:
             self.register_buffer("temporal_reparam_mat", 2.**(-(index_vec[:, None] - index_vec[None]).abs()))
 
         # Keep config counters consistent with vision config
-        self.config.num_temporal_tokens = self.vision_config.spatial_token_num
-        self.config.num_spatial_tokens = self.vision_config.fast_frame_num
+        # FIX: These were swapped! temporal should use fast_frame_num, spatial should use spatial_token_num
+        self.config.num_temporal_tokens = self.vision_config.fast_frame_num
+        self.config.num_spatial_tokens = self.vision_config.spatial_token_num
 
     def init_vision_config(self, tokenizer):
         vision_config = self.vision_config
@@ -719,7 +720,8 @@ class LlavaMetaForCausalLM(ABC):
                         cur_temporal_location_feature = token_transfer(cur_temporal_input_locations[i], temporal_input_embeddings)
                         cur_new_input_embeds[index] = cur_temporal_location_feature
                     for i, index in enumerate(temporal_output_token_indices):
-                        cur_temporal_location_feature = token_transfer(cur_temporal_output_locations[i], temporal_input_embeddings)
+                        # FIX: Use OUTPUT embeddings for OUTPUT tokens (was incorrectly using input embeddings)
+                        cur_temporal_location_feature = token_transfer(cur_temporal_output_locations[i], temporal_output_embeddings)
                         cur_new_input_embeds[index] = cur_temporal_location_feature
 
                     spatial_height_input_token_indices = torch.where(cur_input_ids == self.vision_config.spatial_height_input_token_id)[0]
@@ -728,7 +730,8 @@ class LlavaMetaForCausalLM(ABC):
                         cur_spatial_height_location_feature = token_transfer(cur_spatial_height_input_locations[i], spatial_height_input_embeddings)
                         cur_new_input_embeds[index] = cur_spatial_height_location_feature
                     for i, index in enumerate(spatial_height_output_token_indices):
-                        cur_spatial_height_location_feature = token_transfer(cur_spatial_height_output_locations[i], spatial_height_input_embeddings)
+                        # FIX: Use OUTPUT embeddings for OUTPUT tokens (was incorrectly using input embeddings)
+                        cur_spatial_height_location_feature = token_transfer(cur_spatial_height_output_locations[i], spatial_height_output_embeddings)
                         cur_new_input_embeds[index] = cur_spatial_height_location_feature
 
                     spatial_width_input_token_indices = torch.where(cur_input_ids == self.vision_config.spatial_width_input_token_id)[0]
@@ -737,7 +740,8 @@ class LlavaMetaForCausalLM(ABC):
                         cur_spatial_width_location_feature = token_transfer(cur_spatial_width_input_locations[i], spatial_width_input_embeddings)
                         cur_new_input_embeds[index] = cur_spatial_width_location_feature
                     for i, index in enumerate(spatial_width_output_token_indices):
-                        cur_spatial_width_location_feature = token_transfer(cur_spatial_width_output_locations[i], spatial_width_input_embeddings)
+                        # FIX: Use OUTPUT embeddings for OUTPUT tokens (was incorrectly using input embeddings)
+                        cur_spatial_width_location_feature = token_transfer(cur_spatial_width_output_locations[i], spatial_width_output_embeddings)
                         cur_new_input_embeds[index] = cur_spatial_width_location_feature
 
                     new_input_embeds.append(cur_new_input_embeds)
