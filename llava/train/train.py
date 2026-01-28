@@ -2218,21 +2218,23 @@ def train(attn_implementation=None):
 
     # Configure the number of image placeholder tokens in the input text.
     # This determines how many im_patch tokens will replace each <image> placeholder during preprocessing.
-    # CRITICAL: For fast_slow_resampler with use_downsample_image=False (default),
-    # the encode_images function returns the ORIGINAL 256 tokens (not resampled),
-    # so image_token_num must be 256 to match.
+    # IMPORTANT: Gen 6 (77% BLIMP) used 64 tokens from mm_perceiver_latents.
+    # Using 256 tokens (raw projected features) resulted in worse linguistic performance.
+    # For BabyLM linguistic tasks, fewer image tokens means more focus on text modeling.
     try:
-        # For fast_slow_resampler with use_downsample_image=False, we use raw projected features (256 tokens)
+        # Configure image_token_num based on the actual vision encoder output size.
+        # This determines how many <im_patch> tokens replace each <image> placeholder during preprocessing.
+        # IMPORTANT: This MUST match the actual number of tokens from encode_images!
         if model_args.mm_resampler_type == "fast_slow_resampler":
             use_downsample = getattr(model.model.config, "use_downsample_image", False)
             if use_downsample:
-                # With downsampling, resampler output is used
+                # With downsampling, resampler output (mm_perceiver_latents) is used
                 vision_config.image_token_num = int(model_args.mm_perceiver_latents)
                 rank0_print(f"🔍 image_token_num set from mm_perceiver_latents (use_downsample_image=True): {vision_config.image_token_num}")
             else:
-                # Without downsampling (default), raw projected features (256) are used
+                # Without downsampling, encode_images returns the original 256 projected tokens
                 vision_config.image_token_num = 256
-                rank0_print(f"🔍 image_token_num=256 for fast_slow_resampler (use_downsample_image=False)")
+                rank0_print(f"🔍 image_token_num=256 (fast_slow_resampler with use_downsample_image=False)")
         elif hasattr(model_args, "mm_perceiver_latents") and model_args.mm_perceiver_latents and int(model_args.mm_perceiver_latents) > 0:
             vision_config.image_token_num = int(model_args.mm_perceiver_latents)
             rank0_print(f"🔍 image_token_num set from mm_perceiver_latents: {vision_config.image_token_num}")

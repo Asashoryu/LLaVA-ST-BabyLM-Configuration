@@ -6,7 +6,7 @@
 #SBATCH --gres=gpu:1
 #SBATCH --mem=64G
 #SBATCH --time=48:00:00
-#SBATCH --partition=gpusL40
+#SBATCH --partition=gpusH100
 
 source ~/.bashrc
 conda activate llava-st
@@ -16,7 +16,7 @@ mkdir -p logs
 # 1 = _t, 2 = _ti, 3 = _tim
 # ============================================================
 EXP_ID=3
-PROJECT_VERSION=15
+PROJECT_VERSION=16
 
 # Insert checkpoint path if you want to resume: "output/ckpt_dinov2_new_ti/llama_ALL_SHARDS_ti/checkpoint-2000"
 MODEL_PATH="./baby_llama_baseline"
@@ -57,6 +57,7 @@ MM_RESAMPLER_TYPE="fast_slow_resampler"
 MM_PERCEIVER_LATENTS=64
 MM_PERCEIVER_LATENTS_FAST=32
 MM_PERCEIVER_DEPTH=2
+USE_DOWNSAMPLE_IMAGE=True
 FP16=True
 ATTN_IMPLEMENTATION="sdpa"
 NUM_TRAIN_EPOCHS=1
@@ -123,6 +124,7 @@ python -u llava/train/train_mem.py \
     --mm_perceiver_latents ${MM_PERCEIVER_LATENTS} \
     --mm_perceiver_latents_fast ${MM_PERCEIVER_LATENTS_FAST} \
     --mm_perceiver_depth ${MM_PERCEIVER_DEPTH} \
+    --use_downsample_image ${USE_DOWNSAMPLE_IMAGE} \
     --fp16 ${FP16} \
     --attn_implementation ${ATTN_IMPLEMENTATION} \
     --num_train_epochs ${NUM_TRAIN_EPOCHS} \

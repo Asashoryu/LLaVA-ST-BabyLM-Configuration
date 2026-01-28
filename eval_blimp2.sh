@@ -7,13 +7,13 @@
 # #SBATCH --cpus-per-task=8
 #SBATCH --mem=32G
 #SBATCH --time=02:00:00
-#SBATCH --partition=gpusL40
+#SBATCH --partition=gpusH100
 #SBATCH --gres=gpu:1
 
 # ======================================================
 # 🔧 CONFIGURAZIONE - Con Image Template FIX
 # ======================================================
-CHECKPOINT_DIR="/data1/ososovskyy/LLaVA-ST-BabyLM-Configuration/output/ckpt_mixed_6_tim/checkpoint-14378-100Mwords"
+CHECKPOINT_DIR="/data1/ososovskyy/LLaVA-ST-BabyLM-Configuration/output/ckpt_mixed_16_tim/checkpoint-2796-20Mwords"
 TASK="blimp"
 DATA_PATH="/data1/ososovskyy/babylm_eval/evaluation_data/fast_eval/blimp_fast"
 BATCH_SIZE=64
