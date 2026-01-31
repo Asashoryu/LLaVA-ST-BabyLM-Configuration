@@ -13,7 +13,7 @@
 # ======================================================
 # 🔧 CONFIGURAZIONE - Con Image Template FIX
 # ======================================================
-CHECKPOINT_DIR="/data1/ososovskyy/LLaVA-ST-BabyLM-Configuration/output/ckpt_mixed_19_tim/checkpoint-2796-20Mwords"
+CHECKPOINT_DIR="/data1/ososovskyy/LLaVA-ST-BabyLM-Configuration/output/ckpt_mixed_19_tim/checkpoint-14378-100Mwords"
 TASK="blimp"
 DATA_PATH="/data1/ososovskyy/babylm_eval/evaluation_data/fast_eval/blimp_fast"
 BATCH_SIZE=64
@@ -37,7 +37,7 @@ echo "Start: $(date)"
 echo "Model: $CHECKPOINT_DIR"
 echo "Task: $TASK"
 echo "Batch Size: $BATCH_SIZE"
-echo "⚡ FIX: Aggiunto --image_template append_image_token"
+echo "⚡ TEST: REMOVED --image_template to match training distribution (pure text)"
 echo "============================================"
 
 
@@ -54,13 +54,12 @@ fi
 export PYTHONPATH=/data1/ososovskyy/babylm_eval:$PYTHONPATH
 
 # provare srun python
-# Run evaluation con image_template
+# Run evaluation WITHOUT image_template for pure text tasks (matches training distribution)
 python -m evaluation_pipeline.sentence_zero_shot.run \
   --model_path_or_name $CHECKPOINT_DIR \
   --backend $BACKEND \
   --task $TASK \
   --data_path $DATA_PATH \
-  --image_template append_image_token \
   --batch_size $BATCH_SIZE
 
 EXIT_CODE=$?
