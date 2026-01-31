@@ -1123,16 +1123,15 @@ class LazySupervisedDataset(Dataset):
         length_list = []
         for sample in self.list_data_dict:
             img_tokens = 0
-            # Prefer explicit image token count from vision_config when available
+            # CRITICAL FIX: Only add image tokens for samples that actually have images
+            # Gen 6 (77.40% BLIMP) did NOT add image tokens for text-only samples
             try:
-                if "image" in sample:
+                if "image" in sample or "video" in sample:
                     img_tokens = int(self.vision_config.image_token_num)
-                elif getattr(self.data_args, 'is_multimodal', False):
-                    # Treat missing image in a multimodal dataset as a black image placeholder
-                    img_tokens = int(self.vision_config.image_token_num)
+                # DO NOT treat missing images as multimodal - text is text
             except Exception:
                 # Fallback heuristic
-                img_tokens = 128 if "image" in sample else 0
+                img_tokens = 128 if ("image" in sample or "video" in sample) else 0
             length_list.append(sum(len(conv["value"].split()) for conv in sample["conversations"]) + img_tokens)
         return length_list
 
@@ -1142,8 +1141,9 @@ class LazySupervisedDataset(Dataset):
         for sample in self.list_data_dict:
             cur_len = sum(len(conv["value"].split()) for conv in sample["conversations"])
             assert cur_len > 0, f"Conversation length is 0 for {sample}"
-            if "image" in sample or "video" in sample or self.data_args.early_mix_text or getattr(self.data_args, 'is_multimodal', False):
-                # If the dataset is multimodal, treat missing images as multimodal examples
+            # CRITICAL FIX: Only treat samples with actual images/videos as multimodal
+            # Gen 6 (77.40% BLIMP) treated text-only samples as pure text (negative length)
+            if "image" in sample or "video" in sample or self.data_args.early_mix_text:
                 length_list.append(cur_len)
             else:
                 length_list.append(-cur_len)
@@ -1322,59 +1322,24 @@ class LazySupervisedDataset(Dataset):
                 return self._get_item(i + 1)
 
         else:
-            # --- FIX 2: Text-Only -> Force Multimodal (Black Image) ---
-            # Crea immagine nera reale per allineare i pesi del proiettore
-            try:
-                if hasattr(processor, 'crop_size'):
-                    h = processor.crop_size.get('height', 384)
-                    w = processor.crop_size.get('width', 384)
-                else:
-                    h = w = 384
-            except:
-                h = w = 384
-
-            black_image = Image.new('RGB', (w, h), (0, 0, 0))
-            image_tensor = processor.preprocess(black_image, return_tensors="pt")["pixel_values"][0]
-            image = [(image_tensor, black_image.size, "image")]
-
+            # CRITICAL FIX: Text-Only samples should remain TEXT-ONLY
+            # Gen 6 (77.40% BLIMP) succeeded because text samples were pure text,
+            # no fake images injected. Forcing text to be "multimodal" with black
+            # images hurts linguistic learning.
+            #
+            # DO NOT inject black images or <image> tokens for text-only samples.
+            # Let the model learn pure linguistic patterns without visual interference.
+            image = None
             sources = copy.deepcopy([e["conversations"] for e in sources])
-
-            # Inject the <image> token into the FIRST human turn (not blindly sources[0][0])
-            injected = False
-            for turn in sources[0]:
-                if turn.get("from") == "human":
-                    cur_val = turn.get("value", "")
-                    if DEFAULT_IMAGE_TOKEN not in cur_val:
-                        turn["value"] = DEFAULT_IMAGE_TOKEN + "\n" + cur_val
-                    injected = True
-                    break
-
-            if not injected:
-                # Fallback: preserve previous behavior (insert at position 0)
-                if DEFAULT_IMAGE_TOKEN not in sources[0][0].get("value", ""):
-                    sources[0][0]["value"] = DEFAULT_IMAGE_TOKEN + "\n" + sources[0][0].get("value", "")
-
-            sources = preprocess_multimodal(sources, self.data_args, self.vision_config)
+            # Do NOT call preprocess_multimodal for text-only data
+            # sources = preprocess_multimodal(sources, self.data_args, self.vision_config)
 
         # --- FINAL PROCESSING ---
         if sources is None:
-            # preprocess_multimodal returned None; force a safe fallback instead of skipping the sample
-            rank0_print(f"⚠️ preprocess_multimodal returned None for sample {i}; forcing text fallback and image injection if multimodal")
-            raw_sample = self.list_data_dict[i]
-            sources = copy.deepcopy([e["conversations"] for e in [raw_sample]])
-            if getattr(self.data_args, 'is_multimodal', False):
-                injected = False
-                for turn in sources[0]:
-                    if turn.get("from") == "human":
-                        cur_val = turn.get("value", "")
-                        if DEFAULT_IMAGE_TOKEN not in cur_val:
-                            turn["value"] = DEFAULT_IMAGE_TOKEN + "\n" + cur_val
-                        injected = True
-                        break
-                if not injected:
-                    if DEFAULT_IMAGE_TOKEN not in sources[0][0].get("value", ""):
-                        sources[0][0]["value"] = DEFAULT_IMAGE_TOKEN + "\n" + sources[0][0].get("value", "")
-            # continue processing normally (we no longer skip the sample)
+            # preprocess_multimodal returned None; skip this sample
+            # CRITICAL: Do NOT force text samples to become multimodal
+            # Gen 6 (77.40% BLIMP) skipped problematic samples rather than forcing fake images
+            return self._get_item(min(i + 1, len(self.list_data_dict) - 1))
 
         has_image = (image is not None)
         data_dict = preprocess(sources, self.tokenizer, has_image=has_image)

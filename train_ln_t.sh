@@ -16,7 +16,7 @@ mkdir -p logs
 # 1 = _t, 2 = _ti, 3 = _tim
 # ============================================================
 EXP_ID=3
-PROJECT_VERSION=16
+PROJECT_VERSION=19
 
 # Insert checkpoint path if you want to resume: "output/ckpt_dinov2_new_ti/llama_ALL_SHARDS_ti/checkpoint-2000"
 MODEL_PATH="./baby_llama_baseline"
@@ -57,7 +57,7 @@ MM_RESAMPLER_TYPE="fast_slow_resampler"
 MM_PERCEIVER_LATENTS=64
 MM_PERCEIVER_LATENTS_FAST=32
 MM_PERCEIVER_DEPTH=2
-USE_DOWNSAMPLE_IMAGE=True
+USE_DOWNSAMPLE_IMAGE=False
 FP16=True
 ATTN_IMPLEMENTATION="sdpa"
 NUM_TRAIN_EPOCHS=1

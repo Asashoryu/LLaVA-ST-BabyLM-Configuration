@@ -116,9 +116,9 @@ class VisionConfig:
         self.fast_frame_num = 100
         self.slow_frame_num = 20
 
-        # Default to 64 tokens - matches Gen6 configuration with use_downsample_image=True
-        # and mm_perceiver_latents=64 for better linguistic performance
-        self.image_token_num = 64
+        # Default to 256 tokens - matches Gen 6 (77% BLIMP) which used
+        # use_downsample_image=False with fast_slow_resampler
+        self.image_token_num = 256
 
         self.spatial_token_num = 100
 
