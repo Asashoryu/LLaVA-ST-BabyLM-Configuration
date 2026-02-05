@@ -498,6 +498,21 @@ def preprocess_llama_2(sources, tokenizer: transformers.PreTrainedTokenizer, has
         rounds = conversation.split(conv.sep2)
         cur_len = 1
         target[:cur_len] = IGNORE_INDEX
+
+        # DEBUG: Print first problematic conversation
+        if total_len > 50 and len(rounds) < 3:
+            first_round = rounds[0] if len(rounds) > 0 else "NO_ROUNDS"
+            parts = first_round.split(sep) if len(rounds) > 0 and rounds[0] != "" else []
+            if len(parts) != 2:
+                rank0_print(f"\nDEBUG TOKENIZATION MISMATCH:")
+                rank0_print(f"  total_len={total_len}, cur_len={cur_len}")
+                rank0_print(f"  num_rounds={len(rounds)}")
+                rank0_print(f"  first_round[:200]={first_round[:200]}")
+                rank0_print(f"  sep='{sep}'")
+                rank0_print(f"  num_parts after split={len(parts)}")
+                if len(parts) > 0:
+                    rank0_print(f"  part[0][:100]={parts[0][:100]}")
+
         for i, rou in enumerate(rounds):
             if rou == "":
                 break
@@ -672,7 +687,8 @@ def preprocess_qwen(sources, tokenizer: transformers.PreTrainedTokenizer, has_im
         for idx, encode_id in enumerate(input_id):
             if encode_id in unmask_tokens_idx:
                 target[idx] = encode_id
-            if encode_id == image_token_index:
+            # Only replace image tokens if this sample has images
+            if has_image and encode_id == image_token_index:
                 input_id[idx] = IMAGE_TOKEN_INDEX
         input_ids.append(input_id)
         targets.append(target)
@@ -755,7 +771,8 @@ def preprocess_llama3(
         for idx, encode_id in enumerate(input_id):
             if encode_id in unmask_tokens_idx:
                 target[idx] = encode_id
-            if encode_id == image_token_index:
+            # Only replace image tokens if this sample has images
+            if has_image and encode_id == image_token_index:
                 input_id[idx] = IMAGE_TOKEN_INDEX
 
         input_ids.append(input_id)

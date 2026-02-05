@@ -13,7 +13,12 @@
 # ======================================================
 # 🔧 CONFIGURAZIONE - Con Image Template FIX
 # ======================================================
-CHECKPOINT_DIR="/data1/ososovskyy/LLaVA-ST-BabyLM-Configuration/output/ckpt_mixed_19_tim/checkpoint-14378-100Mwords"
+# Specify model by version and checkpoint by words (in millions).
+# Edit these two variables directly in the script before running.
+MODEL_VERSION="21"
+# Example: 90 -> will match checkpoints with "90Mwords" suffix
+WORDS_M="100"
+
 TASK="blimp"
 DATA_PATH="/data1/ososovskyy/babylm_eval/evaluation_data/fast_eval/blimp_fast"
 BATCH_SIZE=64
@@ -52,6 +57,27 @@ fi
 
 # Export PYTHONPATH
 export PYTHONPATH=/data1/ososovskyy/babylm_eval:$PYTHONPATH
+
+# Build model directory path from version and search for an exact checkpoint
+OUTPUT_ROOT="/data1/ososovskyy/LLaVA-ST-BabyLM-Configuration/output"
+MODEL_DIR="$OUTPUT_ROOT/ckpt_mixed_${MODEL_VERSION}_t"
+
+# normalize WORDS_M in case someone leaves a trailing 'M' or 'm'
+WORDS_NUM="${WORDS_M%[Mm]}"
+
+if [ ! -d "$MODEL_DIR" ]; then
+  echo "Model directory $MODEL_DIR does not exist. Exiting."
+  exit 1
+fi
+
+# Look for checkpoint directories that include the exact "${WORDS_NUM}Mwords" suffix
+MATCH=$(ls -d "$MODEL_DIR"/checkpoint-*"-${WORDS_NUM}"Mwords 2>/dev/null | sort | tail -n1 || true)
+if [ -z "$MATCH" ]; then
+  echo "ERROR: No checkpoint matching '*-${WORDS_NUM}Mwords' found in $MODEL_DIR"
+  exit 1
+fi
+
+CHECKPOINT_DIR="$MATCH"
 
 # provare srun python
 # Run evaluation WITHOUT image_template for pure text tasks (matches training distribution)

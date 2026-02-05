@@ -148,7 +148,7 @@ class Conversation:
                 if i == 0:
                     assert message is not None, "first message should not be none"
                     assert role == self.roles[0], "first message should come from user"
-                if message:
+                if message is not None:  # Allow empty strings - check for None instead
                     if type(message) is tuple:
                         message, _, _ = message
                     if i == 0:
