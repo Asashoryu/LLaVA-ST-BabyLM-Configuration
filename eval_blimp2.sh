@@ -15,7 +15,7 @@
 # ======================================================
 # Specify model by version and checkpoint by words (in millions).
 # Edit these two variables directly in the script before running.
-MODEL_VERSION="21"
+MODEL_VERSION="22"
 # Example: 90 -> will match checkpoints with "90Mwords" suffix
 WORDS_M="100"
 
@@ -60,7 +60,7 @@ export PYTHONPATH=/data1/ososovskyy/babylm_eval:$PYTHONPATH
 
 # Build model directory path from version and search for an exact checkpoint
 OUTPUT_ROOT="/data1/ososovskyy/LLaVA-ST-BabyLM-Configuration/output"
-MODEL_DIR="$OUTPUT_ROOT/ckpt_mixed_${MODEL_VERSION}_t"
+MODEL_DIR="$OUTPUT_ROOT/ckpt_mixed_${MODEL_VERSION}_tim"
 
 # normalize WORDS_M in case someone leaves a trailing 'M' or 'm'
 WORDS_NUM="${WORDS_M%[Mm]}"

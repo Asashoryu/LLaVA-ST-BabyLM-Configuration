@@ -16,7 +16,7 @@ mkdir -p logs
 # 1 = _t, 2 = _ti, 3 = _tim
 # ============================================================
 EXP_ID=2
-PROJECT_VERSION=21
+PROJECT_VERSION=22
 
 # Insert checkpoint path if you want to resume: "output/ckpt_dinov2_new_ti/llama_ALL_SHARDS_ti/checkpoint-2000"
 MODEL_PATH="./baby_llama_baseline"
