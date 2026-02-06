@@ -1252,7 +1252,7 @@ class LazySupervisedDataset(Dataset):
                 return sample
             except Exception as e:
                 # sleep 1s in case it is a cloud disk issue
-                print(f"[Try #{attempt_idx}] Failed to fetch sample {i}. Exception:", e)
+                # Commented to reduce log clutter: print(f"[Try #{attempt_idx}] Failed to fetch sample {i}. Exception:", e)
                 time.sleep(1)
 
         # try other samples, in case it is file corruption issue
@@ -1264,7 +1264,7 @@ class LazySupervisedDataset(Dataset):
                 return sample
             except Exception as e:
                 # no need to sleep
-                print(f"[Try other #{attempt_idx}] Failed to fetch sample {next_index}. Exception:", e)
+                # Commented to reduce log clutter: print(f"[Try other #{attempt_idx}] Failed to fetch sample {next_index}. Exception:", e)
                 pass
 
         try:
@@ -1282,7 +1282,8 @@ class LazySupervisedDataset(Dataset):
                 result = future.result(timeout=timeout)
                 return result
             except concurrent.futures.TimeoutError:
-                print(f'get_item({i}) time out {self.list_data_dict[i]}')
+                # Commented to avoid dumping entire sample: print(f'get_item({i}) time out {self.list_data_dict[i]}')
+                print(f'get_item({i}) timeout - sample skipped')
                 raise NotImplementedError()
 
     def _get_item(self, i) -> Dict[str, torch.Tensor]:

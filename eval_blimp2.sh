@@ -15,7 +15,7 @@
 # ======================================================
 # Specify model by version and checkpoint by words (in millions).
 # Edit these two variables directly in the script before running.
-MODEL_VERSION="22"
+MODEL_VERSION="23"
 # Example: 90 -> will match checkpoints with "90Mwords" suffix
 WORDS_M="100"
 
