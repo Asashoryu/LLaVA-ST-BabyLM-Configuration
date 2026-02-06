@@ -402,6 +402,11 @@ class BabyLMCheckpointCallback(TrainerCallback):
                         eval_root = os.path.abspath(os.path.join(os.path.dirname(os.path.dirname(__file__)), '..', '..', 'babylm_eval'))
                         existing = env_copy.get('PYTHONPATH', '')
                         env_copy['PYTHONPATH'] = eval_root + (':' + existing if existing else '')
+
+                        # ⚠️ CRITICAL: Preserve USE_PLAIN_LM to match training preprocessing mode
+                        if 'USE_PLAIN_LM' in os.environ:
+                            env_copy['USE_PLAIN_LM'] = os.environ['USE_PLAIN_LM']
+
                         proc = subprocess.Popen(cmd, stdout=outf, stderr=subprocess.STDOUT, env=env_copy)
                         proc.wait()
 

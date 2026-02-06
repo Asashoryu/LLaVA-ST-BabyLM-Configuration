@@ -16,7 +16,7 @@ mkdir -p logs
 # 1 = _t, 2 = _ti, 3 = _tim
 # ============================================================
 EXP_ID=2
-PROJECT_VERSION=22
+PROJECT_VERSION=23
 
 # Insert checkpoint path if you want to resume: "output/ckpt_dinov2_new_ti/llama_ALL_SHARDS_ti/checkpoint-2000"
 MODEL_PATH="./baby_llama_baseline"
@@ -95,6 +95,7 @@ export OMP_NUM_THREADS=8
 export WANDB_PROJECT="baby_llama_multi"
 export BABYLM_ENABLED=true
 export BABYLM_WORD_LIMIT=100000000
+export USE_PLAIN_LM=1
 
 echo "------------------------------------------------"
 echo "STARTING TRAINING EXPERIMENT $EXP_ID ($SUFFIX)"

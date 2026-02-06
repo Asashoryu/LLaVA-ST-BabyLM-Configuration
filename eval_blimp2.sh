@@ -58,6 +58,9 @@ fi
 # Export PYTHONPATH
 export PYTHONPATH=/data1/ososovskyy/babylm_eval:$PYTHONPATH
 
+# ⚠️ CRITICAL: Match training mode (Gen 23+ uses plain LM, no instruction wrapper)
+export USE_PLAIN_LM=1
+
 # Build model directory path from version and search for an exact checkpoint
 OUTPUT_ROOT="/data1/ososovskyy/LLaVA-ST-BabyLM-Configuration/output"
 MODEL_DIR="$OUTPUT_ROOT/ckpt_mixed_${MODEL_VERSION}_tim"

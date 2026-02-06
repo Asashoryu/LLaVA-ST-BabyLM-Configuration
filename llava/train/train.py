@@ -62,6 +62,10 @@ local_rank = None
 # Change this constant to switch runtime preprocessing resolution for DINOv2
 DINO_PROCESSOR_RESOLUTION = 224
 
+# Plain LM mode: Skip instruction-following format, train on raw text
+# Set environment variable: USE_PLAIN_LM=1 to enable
+USE_PLAIN_LM = os.environ.get("USE_PLAIN_LM", "0").lower() in ["1", "true", "yes"]
+
 IS_TOKENIZER_GREATER_THAN_0_14 = version.parse(tokenizers.__version__) >= version.parse("0.14")
 
 
@@ -954,6 +958,40 @@ def preprocess_plain(
     return dict(input_ids=input_ids, labels=targets)
 
 
+def preprocess_plain_lm(sources: Sequence[str], tokenizer: transformers.PreTrainedTokenizer, has_image: bool = False) -> Dict:
+    """
+    Plain Language Model preprocessing - no instruction-following format.
+    Directly trains on text without [INST]...[/INST] wrapper.
+
+    For text-only: just concatenates gpt responses
+    For multimodal: prepends <im_start>...<im_end> tokens before text
+
+    No masking - trains on entire sequence.
+    """
+    conversations = []
+
+    for source in sources:
+        # Extract only assistant (gpt) responses, skip human prompts
+        text_parts = [sentence["value"] for sentence in source if sentence["from"] == "gpt"]
+        # Concatenate all parts with BOS token at start
+        full_text = "".join(text_parts)
+        conversations.append(full_text)
+
+    # Tokenize
+    if has_image:
+        # Use special tokenizer that handles image tokens
+        input_ids = [tokenizer_image_token(prompt, tokenizer, return_tensors="pt") for prompt in conversations]
+    else:
+        # Standard tokenization
+        tokenized = _tokenize_fn(conversations, tokenizer)
+        input_ids = tokenized["input_ids"]
+
+    # Labels = input_ids (no masking, train on everything)
+    targets = copy.deepcopy(input_ids)
+
+    return dict(input_ids=input_ids, labels=targets)
+
+
 def preprocess(sources: Sequence[str], tokenizer: transformers.PreTrainedTokenizer, has_image: bool = False) -> Dict:
     """
     Given a list of sources, each is a conversation list. This transform:
@@ -962,6 +1000,13 @@ def preprocess(sources: Sequence[str], tokenizer: transformers.PreTrainedTokeniz
     3. Tokenize the concatenated conversation;
     4. Make a deepcopy as the target. Mask human words with IGNORE_INDEX.
     """
+    # ============================================================
+    # PLAIN LM MODE: Skip instruction format, train on raw text
+    # ============================================================
+    if USE_PLAIN_LM:
+        # rank0_print("🔄 [PLAIN_LM_MODE] Using plain language model preprocessing (no instruction format)")
+        return preprocess_plain_lm(sources, tokenizer, has_image=has_image)
+
     #DEBUG: forcing
     # rank0_print(f">>> FORCING preprocess_llama3 (conversation version: {conversation_lib.default_conversation.version})")
     # return preprocess_llama_2(sources, tokenizer, has_image=has_image)
