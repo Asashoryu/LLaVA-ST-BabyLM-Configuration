@@ -1,4 +1,6 @@
 
+
+
 # Python
 __pycache__
 *.pyc
@@ -141,3 +143,5 @@ eval_babylm_challenge.sh
 inference.sh
 eval_commands. txt
 guide.txt
+
+babylm_italian/

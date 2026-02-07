@@ -963,18 +963,22 @@ def preprocess_plain_lm(sources: Sequence[str], tokenizer: transformers.PreTrain
     Plain Language Model preprocessing - no instruction-following format.
     Directly trains on text without [INST]...[/INST] wrapper.
 
-    For text-only: just concatenates gpt responses
-    For multimodal: prepends <im_start>...<im_end> tokens before text
+    Concatenates ALL conversation turns (human + gpt) in order.
+    Image tokens are already expanded by preprocess_multimodal() before this runs.
+
+    For text-only: "Some text from human" + "Response from GPT"
+    For multimodal: "<im_start>...<im_end>" + "Response from GPT"
 
     No masking - trains on entire sequence.
     """
     conversations = []
 
     for source in sources:
-        # Extract only assistant (gpt) responses, skip human prompts
-        text_parts = [sentence["value"] for sentence in source if sentence["from"] == "gpt"]
-        # Concatenate all parts with BOS token at start
-        full_text = "".join(text_parts)
+        # Concatenate ALL turns (human + assistant) without any template formatting
+        # preprocess_multimodal() already expanded image tokens in human prompts
+        text_parts = [sentence["value"] for sentence in source]
+        # Join with space to avoid unnatural token boundaries, strip to remove leading/trailing spaces from empty prompts
+        full_text = " ".join(text_parts).strip()
         conversations.append(full_text)
 
     # Tokenize
