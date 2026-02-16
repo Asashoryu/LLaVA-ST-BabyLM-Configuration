@@ -1,0 +1,51 @@
+(llava-st) [ososovskyy@master-node LLaVA-ST-BabyLM-Configuration]$ python3 test_italian_model.py
+/home1/ososovskyy/.conda/envs/llava-st/lib/python3.10/site-packages/torch/cuda/__init__.py:51: FutureWarning: The pynvml package is deprecated. Please install nvidia-ml-py instead. If you did not install pynvml directly, please report this to the maintainers of the package that installed pynvml for you.
+  import pynvml  # type: ignore[import]
+🔧 Loading Italian tokenizer from: ./babylm_italian/tokenizer_decoder
+🔧 Loading base model from: ./babylm_italian/bambi_18_24_sept2025
+🔧 Loading trained model from: ./output/ckpt_italian_1_vi_it
+/home1/ososovskyy/.conda/envs/llava-st/lib/python3.10/site-packages/bitsandbytes/cextension.py:34: UserWarning: The installed version of bitsandbytes was compiled without GPU support. 8-bit optimizers, 8-bit multiplication, and GPU quantization are unavailable.
+  warn("The installed version of bitsandbytes was compiled without GPU support. "
+/home1/ososovskyy/.conda/envs/llava-st/lib/python3.10/site-packages/bitsandbytes/libbitsandbytes_cpu.so: undefined symbol: cadam32bit_grad_fp32
+[2026-02-09 18:44:53,835] [WARNING] [real_accelerator.py:162:get_accelerator] Setting accelerator to CPU. If you have GPU or other accelerator, we were unable to detect it.
+[2026-02-09 18:44:53,837] [INFO] [real_accelerator.py:203:get_accelerator] Setting ds_accelerator to cpu (auto detect)
+Warning: The default cache directory for DeepSpeed Triton autotune, /home1/ososovskyy/.triton/autotune, appears to be on an NFS system. While this is generally acceptable, if you experience slowdowns or hanging when DeepSpeed exits, it is recommended to set the TRITON_CACHE_DIR environment variable to a non-NFS path.
+✓ Model loaded on cpu
+
+======================================================================
+🎬 TESTING ITALIAN VIDEO-LANGUAGE MODEL
+======================================================================
+
+[1/10] Prompt: Il gatto nero
+   → topo bianco topo seduto topo seduto seduto seduto seduto seduto
+
+[2/10] Prompt: Ci sono un signore
+   → che lavora con venditore di attrezzatura corridore imprenditore
+
+[3/10] Prompt: Sopra la panca la capra campa, sotto la
+   → doccia fredda seduta stante seduta stante poltrona vuota poltrona rossa
+
+[4/10] Prompt: Devi toccare il fondo per
+   → il muro dell'ospedaleospedale domestico Allenamento a
+
+[5/10] Prompt: Andiamo insieme
+   → professionale EPYGBDprofrey convegno idrico
+
+[6/10] Prompt: L'usignolo sta
+   → dard/unnouccioluto infermiere sbognola sorridente
+
+[7/10] Prompt: Osservando il cielo
+   → notturno spettacolisticafiamme sentimentofognandocicc
+
+[8/10] Prompt: Studiamo insieme la
+   → ggiùggiù mattinadard Andersbergonisti britannici lett
+
+[9/10] Prompt: Dove
+   → dercimio vizio unilateralezionismozionismombiodimenti Chumala
+
+[10/10] Prompt: Il sole splende nel
+   → tramonto. La finestra aperta tenebreante astratta notturno
+
+======================================================================
+✓ Inference test completed!
+======================================================================

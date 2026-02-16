@@ -1,0 +1,50 @@
+/home1/ososovskyy/.conda/envs/llava-st/lib/python3.10/site-packages/torch/cuda/__init__.py:51: FutureWarning: The pynvml package is deprecated. Please install nvidia-ml-py instead. If you did not install pynvml directly, please report this to the maintainers of the package that installed pynvml for you.
+  import pynvml  # type: ignore[import]
+/home1/ososovskyy/.conda/envs/llava-st/lib/python3.10/site-packages/bitsandbytes/cextension.py:34: UserWarning: The installed version of bitsandbytes was compiled without GPU support. 8-bit optimizers, 8-bit multiplication, and GPU quantization are unavailable.
+  warn("The installed version of bitsandbytes was compiled without GPU support. "
+🔧 Loading Italian tokenizer from: ./babylm_italian/tokenizer_decoder
+🔧 Loading base model from: ./babylm_italian/bambi_18_24_sept2025
+🔧 Loading trained model from: ./output/ckpt_italian_1_vi_it
+/home1/ososovskyy/.conda/envs/llava-st/lib/python3.10/site-packages/bitsandbytes/libbitsandbytes_cpu.so: undefined symbol: cadam32bit_grad_fp32
+[2026-02-09 17:31:55,728] [WARNING] [real_accelerator.py:162:get_accelerator] Setting accelerator to CPU. If you have GPU or other accelerator, we were unable to detect it.
+[2026-02-09 17:31:55,729] [INFO] [real_accelerator.py:203:get_accelerator] Setting ds_accelerator to cpu (auto detect)
+Warning: The default cache directory for DeepSpeed Triton autotune, /home1/ososovskyy/.triton/autotune, appears to be on an NFS system. While this is generally acceptable, if you experience slowdowns or hanging when DeepSpeed exits, it is recommended to set the TRITON_CACHE_DIR environment variable to a non-NFS path.
+✓ Model loaded on cpu
+
+======================================================================
+🎬 TESTING ITALIAN VIDEO-LANGUAGE MODEL
+======================================================================
+
+[1/10] Prompt: Descrivi cosa vedi nel video.
+   → Cosavedere Gentili Rapporto architettoscentelottocoltàcani ligucellamento acuta Alitalia sospesa poltronaghenvornosino junioresdard CIStoso concessionariNotizia giallastal architetto africanoontionghen notturnaghen sospesaonoarancioparesto pavititeidsononendo ferma paesaggio comunitariofia
+
+[2/10] Prompt: Il video mostra una scena di
+   → neve sollevata copertaonda pioggia. Questa fontana nel cielo. La gente cade come bambini. Luoghi. La bandiera della montagna. Il paesaggio lunare è la bandiera della bandiera. Lo scafo del Duomo di San Bartolomeo, Malta. Lo scopo di questa vista,
+
+[3/10] Prompt: Questo è un video su
+   → mobile, motore per terra. La piattaforma di lancio spaziale si avvicinava alla cima di un'astronavedente, e si trovava alla stazione spaziale. Questa piattaforma è l'equivalente di un'astronave con un cilindro di legno con la
+
+[4/10] Prompt: Nel filmato si può vedere
+   → Candidato sceno bianca colline della ripresa spettacolare sceno terrestre apprezzabile cinematografica pittore norvegese apprezzabile viale paesaggistici sceno urbana verticale ripresaartista spettacolare aerea scintitaggio tramontovolesino paesaggi urbana viale pedonaleartistaast scintiana ritrovo scinti paesaggio azzurro intensobalenoone paesaggio natalizia urbana meravigliosa paesaggio
+
+[5/10] Prompt: La clip rappresenta
+   → zionismo romanticoNotizia arriva sbo lordoraggioonticosevoli sintetico longis juniores camerini sinteticoone certificazioni ULFFeclitinatottivobernacolo Pennsylvania vacanzevolecioni sintetico motto riferita nevione tenoretosatantelinguaone certificazionion condivise Candidato etàtinato conobbione spiaggia
+
+[6/10] Prompt: Il contenuto del video riguarda
+   → browser imponibileFFNotizia GTPEids ghiacciatasitionalNotizia anteriore UL UL UL Arena turistico invernalidard pubblicitariaoneone Visitataillottolottolotto nuotionalonegu piscinaon tettosino Visitational UL dello Doug fotografico? Chiunque Design cinematografici cinematografici cinematografica teatrale juniores
+
+[7/10] Prompt: Osservando le immagini, si nota
+   → ghenvileculesitisino ciechieclighenddiIIIon Occidentegazione convegnoNotiziationonesiti ULcertificazione mossogurobamiche TEMPOUTOvolettivo juniores invitandoedendoghen anteriore acuta acuta tournée poeticoeclimentale lunare junioressinoternefatti collineddu Chucky semif
+
+[8/10] Prompt: Il video inizia con
+   → fermatissimotosa finché negativiantisconoonendo giocanocherendum svoltosi scopronoalleryendosi sbombioghendard topic"),eclimbiottivo diabeuticisci STEPSone STETICAvoletinatotelle sintetico sbocciare certificazioni quotidiane tournéeeclissisconombiotato ocu diabetologia spaziale
+
+[9/10] Prompt: In questo breve filmato
+   → urto architettomati Sforzaero realismo fiorivares tela pulita artigianato pubblicitaria fiori architetto tessile artistafatto danceana artigianato realizzati costruttori architettotaggiogen FIATerojuanamepreppopapapafati chedard Ford di produzione artistico tessile, architetto, architetto artistico artigianato inartigianato
+
+[10/10] Prompt: Le scene mostrano
+   → lungometraggio teatrale lungometraggio girato cartonicose interpretato sceneggiatore televisivo attrice artistica cinematografici eleganti cinematografica cinematografici punk cinepresa telefilm attrice cinematografico artistico eleganti fanciulla bambina cine lungometraggioattore recitato lungometraggio pittoreattore artistico romantica teatrale seria cinematografica punk cineattore cinematografici manga punk dance punk punk cine amatori juniores colo
+
+======================================================================
+✓ Inference test completed!
+======================================================================

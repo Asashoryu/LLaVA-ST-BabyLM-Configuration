@@ -145,3 +145,15 @@ eval_commands. txt
 guide.txt
 
 babylm_italian/
+
+# Italian Video-Language Project
+data/webvid_italian/videos/*.mp4
+data/webvid_italian/videos/*.webm
+data/webvid_italian/videos/*.avi
+output/ckpt_italian/*/pytorch_model.bin
+output/ckpt_italian/*/model.safetensors
+scripts_italian/__pycache__/
+scripts_italian/*.txt
+scripts_italian/download_videos.sh
+
+scripts_italian/

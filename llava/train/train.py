@@ -1365,15 +1365,65 @@ class LazySupervisedDataset(Dataset):
             sources = preprocess_multimodal(copy.deepcopy([e["conversations"] for e in sources]), self.data_args, self.vision_config)
 
         elif "video" in sources[0]:
-            # Mantieni la tua logica video esistente qui (omessa per brevità, copia dal tuo backup)
-            # ...
-            # Placeholder per far funzionare il copia-incolla se non hai video nel mix immediato:
+            video_file = self.list_data_dict[i]["video"]
+            video_source = self.list_data_dict[i].get("source", None)
+            video_folder = self.data_folders.get(video_source, self.data_args.video_folder)
+            video_file = os.path.join(video_folder, video_file)
+            suffix = video_file.split(".")[-1]
+            if not os.path.exists(video_file):
+                print("File {} not exist!".format(video_file))
+
             try:
-                video_file = self.list_data_dict[i]["video"]
-                # ... (tua logica video originale) ...
-                raise NotImplementedError("Copia qui il blocco video originale dal backup")
+                if "shareVideoGPTV" in video_file:
+                    frame_files = [os.path.join(video_file, f) for f in os.listdir(video_file) if os.path.isfile(os.path.join(video_file, f))]
+                    frame_files.sort()  # Ensure the frames are sorted if they are named sequentially
+
+                    # TODO: Hard CODE: Determine the indices for uniformly sampling 10 frames
+                    if self.data_args.force_sample:
+                        num_frames_to_sample = self.data_args.frames_upbound
+                    else:
+                        num_frames_to_sample = 10
+
+                    avg_fps = 2
+
+                    total_frames = len(frame_files)
+                    sampled_indices = np.linspace(0, total_frames - 1, num_frames_to_sample, dtype=int)
+
+
+                    frame_time = [i/2 for i in sampled_indices]
+                    frame_time = ",".join([f"{i:.2f}s" for i in frame_time])
+
+                    video_time = total_frames / avg_fps
+
+                    # Read and store the sampled frames
+                    video = []
+                    for idx in sampled_indices:
+                        frame_path = frame_files[idx]
+                        try:
+                            with Image.open(frame_path) as img:
+                                frame = img.convert("RGB")
+                                video.append(frame)
+                        except IOError:
+                            print(f"Failed to read frame at path: {frame_path}")
+                else:
+                    meta = self.list_data_dict[i].get("meta", None)
+                    if meta is not None:
+                        split = meta.get("split", None)
+                    else:
+                        split = None
+                    video, video_time, frame_time, num_frames_to_sample = process_video_with_decord(video_file, self.data_args, split=split)
+
+                processor = self.data_args.image_processor
+                image = processor.preprocess(video, return_tensors="pt")["pixel_values"]
+                if self.data_args.add_time_instruction:
+                    time_instruciton = f"The video lasts for {video_time:.2f} seconds, and {num_frames_to_sample} frames are uniformly sampled from it. These frames are located at {frame_time}.Please answer the following questions related to this video."
+                    sources[0]["conversations"][0]["value"] = f'{DEFAULT_IMAGE_TOKEN}\n{time_instruciton}\n{sources[0]["conversations"][0]["value"].replace(DEFAULT_IMAGE_TOKEN, "")}'
+                image = [(image, video[0].size, "video")]
+                sources = preprocess_multimodal(copy.deepcopy([e["conversations"] for e in sources]), self.data_args, self.vision_config)
+                # print(sources)
             except Exception as e:
-                # Fallback semplice o gestione errore
+                print(f"Error: {e}")
+                print(f"Failed to read video file: {video_file}")
                 return self._get_item(i + 1)
 
         else:
@@ -1671,6 +1721,16 @@ def get_model(model_args, training_args, bnb_model_from_pretrained_args):
                 low_cpu_mem_usage=False,
                 **customized_kwargs,
             )
+        elif "gpt2" in model_args.model_name_or_path.lower() or "bambi" in model_args.model_name_or_path.lower():
+            from llava.model.language_model.llava_gpt2 import LlavaGPT2ForCausalLM
+            model = LlavaGPT2ForCausalLM.from_pretrained(
+                model_args.model_name_or_path,
+                cache_dir=training_args.cache_dir,
+                attn_implementation=training_args.attn_implementation,
+                torch_dtype=(torch.bfloat16 if training_args.bf16 else None),
+                low_cpu_mem_usage=False,
+                **customized_kwargs,
+            )
         else:
             raise ValueError(f"Unknown model class {model_args}")
     else:
@@ -1889,6 +1949,22 @@ def train(attn_implementation=None):
             tokenizer.pad_token_id = tokenizer.convert_tokens_to_ids(tokenizer.pad_token)
 
         rank0_print(f"Tokenizer Pad Token ID: {tokenizer.pad_token_id}")
+    elif "gpt2" in model_args.model_name_or_path.lower() or "bambi" in model_args.model_name_or_path.lower():
+        tokenizer = transformers.AutoTokenizer.from_pretrained(
+            model_args.model_name_or_path,
+            cache_dir=training_args.cache_dir,
+            model_max_length=training_args.model_max_length,
+            padding_side="right",
+            use_fast=True,
+        )
+        # GPT-2 tokenizer needs explicit pad token
+        if tokenizer.pad_token is None:
+            rank0_print("ADDED: setting GPT-2 pad_token to eos_token")
+            tokenizer.pad_token = tokenizer.eos_token
+            tokenizer.pad_token_id = tokenizer.eos_token_id
+
+        rank0_print(f"Tokenizer Pad Token ID: {tokenizer.pad_token_id}")
+        rank0_print(f"Tokenizer Vocab Size: {len(tokenizer)}")
 
     rank0_print(f"Prompt version: {model_args.version}")
     if model_args.version == "v0":
@@ -1915,6 +1991,9 @@ def train(attn_implementation=None):
         vision_config = model.get_model().initialize_vision_modules(model_args=model_args, tokenizer=tokenizer, fsdp=training_args.fsdp)
         vision_config.fast_token_num = model_args.mm_perceiver_latents_fast
         vision_config.slow_token_num = model_args.mm_perceiver_latents
+        # CRITICAL FIX: Set frame counts from data args to match video loading
+        vision_config.fast_frame_num = data_args.num_frames
+        vision_config.slow_frame_num = data_args.num_frames
 
         # Move vision tower to the correct device and dtype.
         vision_tower = model.get_vision_tower()

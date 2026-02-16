@@ -56,7 +56,7 @@ else
 fi
 
 # Export PYTHONPATH
-export PYTHONPATH=/data1/ososovskyy/babylm_eval:$PYTHONPATH
+export PYTHONPATH=/data1/ososovskyy/babylm_eval:${PYTHONPATH:-}
 
 # ⚠️ CRITICAL: Match training mode (Gen 23+ uses plain LM, no instruction wrapper)
 export USE_PLAIN_LM=1
@@ -73,6 +73,10 @@ if [ ! -d "$MODEL_DIR" ]; then
   exit 1
 fi
 
+# Create results directory
+RESULTS_DIR="$MODEL_DIR/results"
+mkdir -p "$RESULTS_DIR"
+
 # Look for checkpoint directories that include the exact "${WORDS_NUM}Mwords" suffix
 MATCH=$(ls -d "$MODEL_DIR"/checkpoint-*"-${WORDS_NUM}"Mwords 2>/dev/null | sort | tail -n1 || true)
 if [ -z "$MATCH" ]; then
@@ -81,6 +85,11 @@ if [ -z "$MATCH" ]; then
 fi
 
 CHECKPOINT_DIR="$MATCH"
+CKPT_NAME=$(basename "$CHECKPOINT_DIR")
+
+# Set output directory for this checkpoint
+CHECKPOINT_OUTPUT_DIR="$RESULTS_DIR/$CKPT_NAME"
+mkdir -p "$CHECKPOINT_OUTPUT_DIR"
 
 # provare srun python
 # Run evaluation WITHOUT image_template for pure text tasks (matches training distribution)
@@ -89,7 +98,8 @@ python -m evaluation_pipeline.sentence_zero_shot.run \
   --backend $BACKEND \
   --task $TASK \
   --data_path $DATA_PATH \
-  --batch_size $BATCH_SIZE
+  --batch_size $BATCH_SIZE \
+  --output_dir $CHECKPOINT_OUTPUT_DIR
 
 EXIT_CODE=$?
 

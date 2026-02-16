@@ -234,13 +234,14 @@ class TokenPacker(nn.Module):
         slow_latents = int(os.environ.get('MM_PERCEIVER_LATENTS', model_args.mm_perceiver_latents))
         fast_latents = int(os.environ.get('MM_PERCEIVER_LATENTS_FAST', model_args.mm_perceiver_latents_fast))
 
-        rank0_print(f"\n{'='*70}")
-        rank0_print(f"TokenPacker.__init__():")
-        rank0_print(f"  model_args.mm_perceiver_latents={model_args.mm_perceiver_latents}")
-        rank0_print(f"  model_args.mm_perceiver_latents_fast={model_args.mm_perceiver_latents_fast}")
-        rank0_print(f"  (Env override) slow_latents={slow_latents}")
-        rank0_print(f"  (Env override) fast_latents={fast_latents}")
-        rank0_print(f"{'='*70}\n")
+        # rank0_print(f"\n{'='*70}")
+        # rank0_print(f"TokenPacker.__init__():")
+        # rank0_print(f"  model_args.mm_perceiver_latents={model_args.mm_perceiver_latents}")
+        # rank0_print(f"  model_args.mm_perceiver_latents_fast={model_args.mm_perceiver_latents_fast}")
+        # rank0_print(f"  (Env override) slow_latents={slow_latents}")
+        # rank0_print(f"  (Env override) fast_latents={fast_latents}")
+        # rank0_print(f"{'='*70}\n")
+        pass
 
         self.depth = model_args.mm_perceiver_depth
         self.slow_num_latents = slow_latents
@@ -277,8 +278,9 @@ class TokenPacker(nn.Module):
         grid_size_fast = int(round(self.fast_num_latents ** 0.5))
         spatial_scale_fast = max(1, int(math.ceil(raw_grid_spatial / grid_size_fast)))
 
-        rank0_print(f"TokenPacker Init: InputGrid={raw_grid_spatial}, SlowScale={spatial_scale_slow}, FastScale={spatial_scale_fast}")
-        rank0_print(f"TokenPacker: visual_dim={visual_dim} (features from mm_projector)")
+        # rank0_print(f"TokenPacker Init: InputGrid={raw_grid_spatial}, SlowScale={spatial_scale_slow}, FastScale={spatial_scale_fast}")
+        # rank0_print(f"TokenPacker: visual_dim={visual_dim} (features from mm_projector)")
+        pass
 
         self.token_packer = TokenPackerModule(
             raw_grid=raw_grid_spatial,
@@ -301,7 +303,8 @@ class TokenPacker(nn.Module):
             hidden_size=visual_dim,
             patch_devide_pattern='temporal',
             spatial_scale_factor=spatial_scale_slow,
-            temporal_scale_factor=5
+            temporal_scale_factor=5,
+            num_temporal_latents=4  ##CRITICAL: Match video frame count (FRAMES_UPBOUND=4)
         )
 
         self.token_packer_fast = TokenPackerModule(

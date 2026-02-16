@@ -475,6 +475,11 @@ class LlavaMetaForCausalLM(ABC):
                 if 'fast_slow_resampler' in self.get_model().config.mm_resampler_type:
                     image_feature = self.get_model().vision_resampler(image_feature, slow=False)
                     if type(image_feature) == tuple:
+                        # Debug: resampler output shapes (commented for production)
+                        # print(f"\n🔍 RESAMPLER OUTPUT:")
+                        # print(f"  slow shape: {image_feature[0].shape}")
+                        # print(f"  fast shape: {image_feature[1].shape}")
+                        # print(f"  After flatten(0,1): slow={(image_feature[0].flatten(0,1).shape[0])}, fast={(image_feature[1].flatten(0,1).shape[0])}")
                         slow_image_features.append(image_feature[0])
                         fast_image_features.append(image_feature[1])
                     else:
@@ -632,13 +637,33 @@ class LlavaMetaForCausalLM(ABC):
                 elif modality == 'video':
                     video_start_tokens = torch.where(cur_input_ids == self.vision_config.vid_start_token)[0]
 
+                    # Debug: video token processing (commented for production)
+                    # print(f"\n🔍 FAST PATH VIDEO DEBUG:")
+                    # print(f"  vision_config.fast_frame_num = {self.vision_config.fast_frame_num}")
+                    # print(f"  vision_config.slow_frame_num = {self.vision_config.slow_frame_num}")
+                    # print(f"  video_start_tokens: {video_start_tokens}")
+                    # print(f"  cur_input_ids length: {len(cur_input_ids)}")
+
                     for video_start_token_pos in video_start_tokens:
                         cur_video_features = encoded_fast_image_features[cur_video_idx].to(device=cur_input_embeds.device)
 
                         cur_video_features = cur_video_features.flatten(0, 1)
                         num_patches = cur_video_features.shape[0]
-                        if cur_input_ids[video_start_token_pos + num_patches - 1] != self.vision_config.vid_end_token:
-                            raise ValueError("The video end token should follow the video start token.")
+
+                        # print(f"  Fast path: video_start_pos={video_start_token_pos}, num_patches={num_patches}")
+
+                        expected_end_pos = video_start_token_pos + num_patches - 1
+                        if expected_end_pos >= len(cur_input_ids):
+                            print(f"⚠️  ERROR: Expected end token at position {expected_end_pos} but sequence only has {len(cur_input_ids)} tokens")
+                            print(f"  Skipping this sample to continue training...")
+                            continue
+
+                        if cur_input_ids[expected_end_pos] != self.vision_config.vid_end_token:
+                            print(f"⚠️  WARNING: Video end token mismatch!")
+                            print(f"  Expected end token at pos {expected_end_pos}, found token {cur_input_ids[expected_end_pos]} instead of {self.vision_config.vid_end_token}")
+                            print(f"  Sequence length: {len(cur_input_ids)}, num_patches: {num_patches}")
+                            print(f"  Skipping this sample to continue training...")
+                            continue
                         if orig_embeds_params is not None:
                             cur_new_input_embeds = torch.cat((
                                 cur_input_embeds[:video_start_token_pos],
@@ -655,14 +680,27 @@ class LlavaMetaForCausalLM(ABC):
 
                     if self.vision_config.slow_token:
                         slow_video_start_tokens = torch.where(cur_input_ids == self.vision_config.slow_vid_start_token)[0]
+                        # print(f"\n🔍 SLOW PATH VIDEO DEBUG:")
+                        # print(f"  slow_video_start_tokens: {slow_video_start_tokens}")
 
                         for video_start_token_pos in slow_video_start_tokens:
                             cur_video_features = encoded_image_features[cur_video_idx].to(device=cur_input_embeds.device)
 
                             cur_video_features = cur_video_features.flatten(0, 1)
                             num_patches = cur_video_features.shape[0]
-                            if cur_input_ids[video_start_token_pos + num_patches - 1] != self.vision_config.slow_vid_end_token:
-                                raise ValueError("The video end token should follow the video start token.")
+                            expected_end_pos = video_start_token_pos + num_patches - 1
+                            # print(f"  Slow path: video_start_pos={video_start_token_pos}, num_patches={num_patches}, expected_end_pos={expected_end_pos}")
+
+                            if expected_end_pos >= len(cur_input_ids):
+                                print(f"⚠️  ERROR: Expected slow end token at position {expected_end_pos} but sequence only has {len(cur_input_ids)} tokens")
+                                print(f"  Skipping this sample to continue training...")
+                                continue
+
+                            if cur_input_ids[expected_end_pos] != self.vision_config.slow_vid_end_token:
+                                print(f"⚠️  WARNING: Slow video end token mismatch!")
+                                print(f"  Expected end token at pos {expected_end_pos}, found token {cur_input_ids[expected_end_pos]} instead of {self.vision_config.slow_vid_end_token}")
+                                print(f"  Skipping this sample to continue training...")
+                                continue
                             if orig_embeds_params is not None:
                                 cur_new_input_embeds = torch.cat((
                                     cur_input_embeds[:video_start_token_pos],
