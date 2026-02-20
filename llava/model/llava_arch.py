@@ -720,6 +720,13 @@ class LlavaMetaForCausalLM(ABC):
 
             inputs_embeds = torch.stack(new_input_embeds, dim=0)
 
+            # CRITICAL FIX: Ensure gradient flow for multimodal inputs
+            # After stacking/concatenating video features with text embeddings,
+            # explicitly enable requires_grad to ensure gradients flow through
+            # trainable components (mm_projector, vision_resampler, language_model)
+            if self.training and not inputs_embeds.requires_grad:
+                inputs_embeds.requires_grad_(True)
+
         if (input_ids.shape[1] != 1 or self.training) and variables and any(any(v.values()) for v in variables):
             new_input_embeds = []
 

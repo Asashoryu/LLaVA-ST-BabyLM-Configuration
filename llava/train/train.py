@@ -969,7 +969,7 @@ def preprocess_plain_lm(sources: Sequence[str], tokenizer: transformers.PreTrain
     For text-only: "Some text from human" + "Response from GPT"
     For multimodal: "<im_start>...<im_end>" + "Response from GPT"
 
-    No masking - trains on entire sequence.
+    CRITICAL FIX: Mask image/video tokens in labels - model should only predict text!
     """
     conversations = []
 
@@ -990,8 +990,35 @@ def preprocess_plain_lm(sources: Sequence[str], tokenizer: transformers.PreTrain
         tokenized = _tokenize_fn(conversations, tokenizer)
         input_ids = tokenized["input_ids"]
 
-    # Labels = input_ids (no masking, train on everything)
+    # Labels = input_ids but with image/video tokens masked
     targets = copy.deepcopy(input_ids)
+
+    # CRITICAL FIX: Mask image/video patch tokens so model only predicts text
+    # Get token IDs for special tokens (they were added during model initialization)
+    im_start_token_id = tokenizer.convert_tokens_to_ids(DEFAULT_IM_START_TOKEN)
+    im_end_token_id = tokenizer.convert_tokens_to_ids(DEFAULT_IM_END_TOKEN)
+    im_patch_token_id = tokenizer.convert_tokens_to_ids(DEFAULT_IMAGE_PATCH_TOKEN)
+    vid_start_token_id = tokenizer.convert_tokens_to_ids(DEFAULT_VID_START_TOKEN)
+    vid_end_token_id = tokenizer.convert_tokens_to_ids(DEFAULT_VID_END_TOKEN)
+    vid_patch_token_id = tokenizer.convert_tokens_to_ids(DEFAULT_VIDEO_PATCH_TOKEN)
+    slow_vid_start_token_id = tokenizer.convert_tokens_to_ids(DEFAULT_SLOW_VID_START_TOKEN)
+    slow_vid_end_token_id = tokenizer.convert_tokens_to_ids(DEFAULT_SLOW_VID_END_TOKEN)
+
+    # Mask all image/video tokens in each target sequence
+    for target in targets:
+        # Mask image tokens (im_start, im_patch, im_end)
+        if isinstance(target, torch.Tensor):
+            target[(target == im_start_token_id) | (target == im_end_token_id) | (target == im_patch_token_id)] = IGNORE_INDEX
+            # Mask video tokens (vid_start, vid_patch, vid_end, slow versions)
+            target[(target == vid_start_token_id) | (target == vid_end_token_id) | (target == vid_patch_token_id)] = IGNORE_INDEX
+            target[(target == slow_vid_start_token_id) | (target == slow_vid_end_token_id)] = IGNORE_INDEX
+        else:
+            # Handle list format (shouldn't happen with has_image=True, but be safe)
+            for i in range(len(target)):
+                if target[i] in [im_start_token_id, im_end_token_id, im_patch_token_id,
+                                 vid_start_token_id, vid_end_token_id, vid_patch_token_id,
+                                 slow_vid_start_token_id, slow_vid_end_token_id]:
+                    target[i] = IGNORE_INDEX
 
     return dict(input_ids=input_ids, labels=targets)
 

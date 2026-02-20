@@ -17,7 +17,7 @@ mkdir -p logs
 # 1 = _t_it (text-only Italian), 2 = _vi_it (video+italian)
 # ============================================================
 EXP_ID=2
-PROJECT_VERSION=3
+PROJECT_VERSION=4
 
 # Model: Use BAMBI with random weights (training from scratch)
 # Created with: python create_random_weights_model.py
