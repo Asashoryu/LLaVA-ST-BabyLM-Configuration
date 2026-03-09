@@ -101,9 +101,6 @@ baby_llama3_baseline/
 babylm_italian/
 scripts_italian/
 
-scripts/eval/
-scripts/features/
-scripts/train/
 
 tests/
 tools/
