@@ -17,7 +17,7 @@ mkdir -p logs
 # 1 = _t_it (text-only Italian), 2 = _vi_it (video+italian)
 # ============================================================
 EXP_ID=2
-PROJECT_VERSION=4
+PROJECT_VERSION=6
 
 # Model: Use BAMBI with random weights (training from scratch)
 # Created with: python create_random_weights_model.py
@@ -80,7 +80,7 @@ GRADIENT_ACCUMULATION_STEPS=4  # Effective batch size = 16
 LEARNING_RATE=5e-4
 MM_PROJECTOR_LR=5e-4
 SAVE_STRATEGY="steps"
-SAVE_STEPS=230  # Save every 230 steps (~30 checkpoints for 6960 total steps = 80 epochs)
+SAVE_STEPS=230  # Save every 230 steps (~26 checkpoints for ~5967 total steps = 80 epochs on 1193-sample dataset)
 SAVE_TOTAL_LIMIT=10
 WEIGHT_DECAY=0.
 WARMUP_RATIO=0.1
