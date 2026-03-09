@@ -2551,31 +2551,6 @@ def train(attn_implementation=None):
         checkpoints.sort(key=get_step_number)
         latest_checkpoint = checkpoints[-1]
         rank0_print(f"📂 Resuming from checkpoint: {latest_checkpoint.name}")
-        
-        # Load BabyLM callback state from existing checkpoints
-        if babylm_enabled and callbacks_list:
-            babylm_cb = callbacks_list[0]  # First callback is BabyLM
-            rank0_print("🔄 Restoring BabyLM milestones from existing checkpoints...")
-            
-            # Scan all checkpoints and extract milestones from names
-            import re
-            milestone_pattern = re.compile(r'checkpoint-\d+-(\d+)Mwords')
-            restored_milestones = set()
-            
-            for ckpt in checkpoints:
-                match = milestone_pattern.match(ckpt.name)
-                if match:
-                    # Convert XMwords to actual number (e.g., "100Mwords" -> 100_000_000)
-                    milestone_m = int(match.group(1))
-                    milestone = milestone_m * 1_000_000
-                    restored_milestones.add(milestone)
-            
-            if restored_milestones:
-                babylm_cb.saved_milestones = restored_milestones
-                rank0_print(f"   ✅ Restored {len(restored_milestones)} milestones: {sorted(restored_milestones)}")
-            else:
-                rank0_print("   ⚠️  No milestone checkpoints found")
-        
         trainer.train(resume_from_checkpoint=str(latest_checkpoint))
     else:
         # Start fresh training if no checkpoints are found.
